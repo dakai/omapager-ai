@@ -26,6 +26,9 @@ window title does not prove origin.
 | omarchy-exec-argv hint | Process exec | Screenshot-editor allowlist; separately brokered local-file opening and PID-only crash diagnosis; re-parse on activate; never persisted |
 | Window focus target | Hyprland Lua | Compositor hexadecimal address only |
 | Helper process | HOME/network | Bubblewrap fail-closed profiles |
+| Message text | Model advice | Suggestion must quote the row's own text and re-validate; no new capability |
+| API key | Credential | Desktop keyring only; never in config, state, argv or logs |
+| Model endpoint | Network egress | Settings only, never notification text; pinned https, redirects refused, loopback literal |
 | GitHub PR | CI token/tools | SHA-pinned actions, read-only default, no secrets or privileged PR trigger |
 
 ## Residual risks and exclusions
@@ -73,3 +76,26 @@ product names ("Visual Studio Code") as secrets, destructively, on every
 restore. The Python detector now requires a distinct nearby code-shaped
 token; it remains a heuristic, not a proof, and an unusual OTP format can
 still be missed in either direction.
+
+The same caveat applies to the rule-layer redaction added for credentials and
+personal data. It recognises shapes, so an unusual secret format is not found,
+and a very ordinary-looking string that happens to match a shape (a long
+numeric order id that passes Luhn) is hidden. Persistence treats only
+credential shapes as destructive and leaves personal data in history, because a
+message that mentions an address is still a message; the display filter is
+available for the cases where that is not enough.
+
+The model layer widens the attack surface in three named ways, all accepted
+deliberately and all bounded. A notification body reaches a third party when a
+remote provider is configured — the text is what is being classified, and the
+user chose that provider. A prompt injected through a body can steer the
+classification, which is why its output is advisory: a suggestion can only
+select among values the row already contains, and duplicates are only confirmed
+against a card that is already on screen. A provider that is slow or down costs
+one abandoned request per notification and never blocks an arrival; the queue is
+capped, one request is in flight, and everything fails open.
+
+Given a prompt-injection payload, the worst outcome is a card offering a button
+the notification itself already justified, or a false "not a duplicate" that
+shows both copies. Neither grants a capability that did not exist before the
+model was enabled.

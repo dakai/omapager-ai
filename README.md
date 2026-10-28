@@ -59,7 +59,11 @@ are snoozed or silenced. Turn this off with the key button in the panel.
 the panel's Held Back section.
 
 **Recent notifications.** Review recently dismissed or expired notifications
-by expanding Recent in the panel. The list clears when the shell restarts.
+by expanding Recent in the panel, or keep it open with `alwaysShowRecent`.
+Each row keeps the offers its card had - copy a code, open a link, copy a number,
+snooze the source, remove the row.
+The list is per session: notifications still on screen come back after the
+shell reloads, dismissed ones do not. History is the durable list.
 
 **Notification history.** Expand History to read up to 100 closed notifications,
 newest first, including messages held while snoozed or silenced. Unlike Recent,
@@ -74,6 +78,24 @@ redacted.
 Set `fetchRemoteIcons` to `false` in the config to disable fetching.
 Sender-provided image files are decoded by a bounded helper and kept in memory
 for the live toast. Rejected files fall back to the resolved source icon.
+
+**Secrets stay off the screen and off the disk.** API keys, tokens, private
+keys, passwords inside connection URLs, card and account numbers, email
+addresses and phone numbers in a message can be masked on the card, and are
+redacted from history regardless. Set `sensitiveFilter` to `mask` or
+`redact`; the rules run locally and no model is involved.
+
+**Optional model layer.** Omapager can ask an OpenAI-compatible endpoint to
+recognise a duplicated message from a second source, or to point out an action a
+card should offer. It is off until you choose a provider. The model never adds a
+capability: a suggested button is shown only when the notification already
+contained the thing it points at. The API key is kept in the desktop keyring,
+not in `shell.json`.
+
+**Saved files.** When a message names a file it just saved, the card grows a
+File button: Reveal, Properties, Open, or copy the path. A notification surface
+cannot host another application's real context menu; these four are what that
+menu is used for, and `fileManager` picks which application answers.
 
 ## Install
 
@@ -177,9 +199,26 @@ below apply to new configurations, not choices you have already saved.
 | `recentCount` | `5` | Recent notifications shown in the panel, from 1 to 20. Clears on shell restart. |
 | `fetchRemoteIcons` | `true` | Fetch missing website icons. Turning it off keeps local and validated cached icons. Requires Pillow. Config-only. |
 | `requireSandbox` | `false` | Require Bubblewrap instead of allowing helpers to run directly when it is unavailable. Config-only. |
-| `allowDefaultActionOnCardClick` | `false` | Allow the app's default action on a card click. Explicit action buttons remain available when off. |
+| `allowDefaultActionOnCardClick` | `false` | Allow the app's default action on a card click. Off by default: a click on the card body then does nothing, so a mis-click cannot lose a notification. Middle-click dismisses; every offer and sender action is a button. |
 | `historyHours` | `24` | Keep disk history for `1`, `24` or `168` hours, with a 100-entry cap. `0` disables it. |
 | `clipboardTimeout` | `60` | Clear copied codes after `30`, `60` or `90` seconds, unless the clipboard has changed. |
+| `swapMouseButtons` | `false` | Make right-click the plain click and left-click open the panel, on the bar indicator only. Cards keep right-click for the source menu. |
+| `alwaysShowRecent` | `false` | Open the panel and the latest five notifications are already listed, instead of waiting behind the Recent fold-out. |
+| `sensitiveFilter` | `off` | `mask` hides credentials and personal data in the card while keeping the sentence; `redact` replaces the message. History is always redacted regardless. |
+| `fileManager` | `auto` | `nautilus`, `dolphin`, `thunar` or `nemo` for a saved file's Reveal and Properties actions. `auto` uses the desktop's registered file manager. |
+| `llmProvider` | `off` | An OpenAI-compatible endpoint used to spot duplicates and suggest buttons. `ollama`, `lmstudio` and `llamacpp` are local presets; `openrouter`, `openai` and `deepseek` are remote; `custom` uses `llmBaseUrl`. Off contacts nothing. |
+| `llmBaseUrl` | empty | Endpoint for `custom`. Must end in `/v1`. Plain `http` is accepted only for `127.0.0.1` or `::1`. |
+| `llmModel` | empty | Model name. Empty uses the provider's default. |
+| `llmDedupe` | `true` | Show one card when the same message arrives from two sources. Identical text is merged either way; this also merges wording that differs but means the same. |
+| `llmDedupeModel` | empty | A second, cheaper model used only for the duplicate question. Empty uses the model above. A small or flash model is enough: the answer is one boolean. |
+| `llmDedupeApi` | `chat` | `chat` sends both notifications to a chat model and reads a JSON reply. `systemone` sends one yes/no question to a System One model such as Jev (`group/jev` at Magpie), which answers with a probability: faster, cheaper, and nothing to parse. A card is merged at 0.7 or above. |
+| `llmIntent` | `true` | Let the model point out a code, link, phone number or file the card should offer. A suggestion must point at text the notification already contains. |
+
+The API key is not a `shell.json` option and cannot be set there. Choose a
+provider, then open the preferences window from the bar panel's cog and paste
+the key: it goes to the desktop keyring (libsecret) and is never written to
+disk, argv or a log. On a machine with no secret service the model section
+disables itself.
 
 Add options to the existing widget entry. This example is not a complete
 `shell.json` file:
@@ -412,6 +451,8 @@ vulnerability.
 - Bubblewrap, packaged as `bubblewrap`, is optional unless `requireSandbox` is on.
 - `wl-clipboard` is recommended for sensitive clipboard handling.
 - KDE Connect and its phone app are required for phone notifications and replies.
+- A secret service (GNOME Keyring or KWallet) is required only for the optional
+  model layer, to store its API key. Without one that section disables itself.
 
 See [Security](#security) for icon-fetching and sandbox behaviour.
 

@@ -77,9 +77,17 @@ def safe(name):
 # Keep the raw-helper/legacy check independent of caller-supplied code flags,
 # but use Detect.js's vocabulary, windows and shapes. Product names and years
 # are ordinary notification text; migrating them must not destroy history.
+# Mirrors Detect.js, including the CJK terms. They cannot carry \b: Chinese,
+# Japanese and Korean have no spaces, so "验证码123456" is one run and a boundary
+# assertion never fires. They are matched as plain substrings, and only as the
+# exact phrases an SMS uses - never a bare 密码, which means any password.
 CODE_KEYWORD = re.compile(
     r"\b(code|otp|one[\s-]?time|verification|verify|passcode|pin|2fa|"
-    r"two[\s-]factor|security key|confirm(?:ation)?)\b", re.IGNORECASE | re.ASCII)
+    r"two[\s-]factor|security key|confirm(?:ation)?)\b"
+    r"|验证码|驗證碼|校验码|校驗碼|确认码|確認碼|認證碼|认证码|激活码|激活碼"
+    r"|动态码|動態碼|动态密码|動態密碼|一次性密码|一次性密碼|短信验证|短信驗證"
+    r"|验证代码|驗證代碼|認証コード|確認コード|認証番号|ワンタイムパスワード"
+    r"|인증번호|인증코드|인증 번호|인증 코드", re.IGNORECASE)
 CODE_SHAPE = re.compile(
     r"(?:^|[^A-Za-z0-9_-])((?:[A-Za-z]-)?[0-9]{2,4}[\s-][0-9]{2,5}|"
     r"(?:[A-Za-z]-)?[0-9]{4,8})(?![A-Za-z0-9_-])")
@@ -117,6 +125,99 @@ def looks_like_a_code(text):
     return False
 
 
+# The rule layer, mirrored from Redact.js. Shapes only: a value is a credential
+# because it looks like one, not because a word was near it. The two
+# implementations are separate on purpose - a bug in one must not be able to
+# let a secret reach the screen and the disk at the same moment - and the
+# corpus tests are what keeps them from drifting apart.
+#
+# The third element says whether the rule finds personal data rather than a
+# credential. Persistence only acts on credentials; the display filter can act
+# on both. A message that signs off with an email address is still a message.
+SENSITIVE = (
+    (re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]{0,16384}?"
+                r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----"), ("PRIVATE KEY",), False),
+    (re.compile(r"\bsk-(?:ant-|proj-|or-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}\b"), ("sk-",), False),
+    (re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}"
+                r"|glpat-[A-Za-z0-9_-]{20,})\b"), ("ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+                                                 "github_pat_", "glpat-"), False),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), ("AIza",), False),
+    (re.compile(r"\bxox[abposr]-[0-9A-Za-z-]{10,}\b"), ("xox",), False),
+    (re.compile(r"\b(?:sk|rk)_live_[0-9A-Za-z]{20,}\b"), ("_live_",), False),
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), ("AKIA", "ASIA"), False),
+    (re.compile(r"\b(?:hf_[A-Za-z0-9]{30,}|gsk_[A-Za-z0-9]{40,}|xai-[A-Za-z0-9]{40,}"
+                r"|npm_[A-Za-z0-9]{36}|pypi-[A-Za-z0-9_-]{50,}|dop_v1_[a-f0-9]{64})\b"),
+     ("hf_", "gsk_", "xai-", "npm_", "pypi-", "dop_v1_"), False),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), ("eyJ",), False),
+    (re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/?#\"'<>]*:[^\s@/?#\"'<>]{3,}@"), ("://",), False),
+    (re.compile(r"\b[A-Za-z0-9.!#$&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9]"
+                r"(?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9]"
+                r"(?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b"), ("@",), True),
+    (re.compile(r"\b[A-Z]{2}[0-9]{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,4})?\b"), (), False),
+    (re.compile(r"\b(?:[0-9]{4}[ -]){3}[0-9]{4}\b"), (), False),
+    (re.compile(r"\b[0-9]{13,19}\b"), (), False),
+    (re.compile(r"(?:\+|00)[0-9][0-9 ().-]{7,20}[0-9]"), ("+", "(", " "), True),
+)
+
+
+def _luhn(value):
+    digits = re.sub(r"[^0-9]", "", value)
+    if len(digits) < 13 or len(digits) > 19:
+        return False
+    total, double = 0, False
+    for character in reversed(digits):
+        digit = ord(character) - 48
+        if double:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+        double = not double
+    return total % 10 == 0
+
+
+def _iban(value):
+    return sum(character.isdigit() for character in value) >= 8
+
+
+def _card_rule(value):
+    return _luhn(value)
+
+
+def contains_sensitive(text, personal=False):
+    """True when a credential — or, with `personal`, personal data — is present.
+
+    Uses the same marker-first short circuit as Redact.js, so a long body costs
+    a handful of substring tests rather than a regex sweep per rule.
+
+    Persistence asks for credentials only. An email address or a phone number in
+    an ordinary message is the message, and replacing the whole notification
+    with a placeholder because somebody signed off with their address would
+    destroy the history this store exists to keep. The display filter can hide
+    those, because hiding is reversible and forgetting is not.
+    """
+    text = text[:MAX_BODY]
+    for pattern, markers, personal_rule in SENSITIVE:
+        if not personal and personal_rule:
+            continue
+        if markers and not any(marker in text for marker in markers):
+            continue
+        for match in pattern.finditer(text):
+            if not _shape_ok(pattern, match.group()):
+                continue
+            return True
+    return False
+
+
+def _shape_ok(pattern, value):
+    source = pattern.pattern
+    if source.startswith(r"\b[A-Z]{2}[0-9]{2}"):
+        return _iban(value)
+    if r"[0-9]{13,19}" in source or r"[0-9]{4}[ -]" in source:
+        return _card_rule(value)
+    return True
+
+
 def sanitise(entry):
     # Independently defend raw helper callers and legacy state migrations.
     allowed = {"key", "originalId", "senderPid", "app", "appIcon", "summary",
@@ -133,7 +234,8 @@ def sanitise(entry):
     for _ in range(3):
         text = html.unescape(text)
     text = re.sub(r"\s+", " ", text).strip()
-    secret = bool(entry.get("code") or entry.get("codes")) or looks_like_a_code(text)
+    secret = (bool(entry.get("code") or entry.get("codes"))
+              or looks_like_a_code(text) or contains_sensitive(text))
     out = {k: v for k, v in entry.items() if k in allowed and isinstance(v, (str, int, float, bool))}
     if secret:
         out = {k: v for k, v in out.items() if not isinstance(v, str) or k == "key"}

@@ -219,6 +219,50 @@ class Network(unittest.TestCase):
         with patch.object(net,'resolve_public_answers',return_value=()),patch.object(net,'PinnedHTTPConnection',return_value=conn):
             with self.assertRaises(ValueError):net.fetch_once('https://example.com',10)
         conn.close.assert_called_once()
+    def test_post_keeps_the_pinned_destination_and_refuses_redirects(self):
+        response=MagicMock(status=200)
+        response.getheader.side_effect=lambda k,d=None: d
+        response.read1.return_value=b'{"ok":true}'
+        response.isclosed.return_value=True
+        conn=MagicMock();conn.getresponse.return_value=response;conn.sock=None
+        conn.remaining.return_value=1.0
+        answer=(socket.AF_INET,socket.SOCK_STREAM,6,'',('93.184.216.34',443))
+        with patch.object(net,'resolve_public_answers',return_value=[answer]),patch.object(net,'PinnedHTTPConnection',return_value=conn):
+            body=net.post('https://api.example.com/v1/chat',b'{}',
+                          {'Authorization':'Bearer test'},1024)
+        self.assertEqual(body,b'{"ok":true}')
+        method,target=conn.request.call_args[0][:2]
+        self.assertEqual((method,target),('POST','/v1/chat'))
+        sent=conn.request.call_args[1]['headers']
+        self.assertEqual(sent['Authorization'],'Bearer test')
+        self.assertEqual(sent['Host'],'api.example.com')
+        # A caller cannot retarget the connection or suppress the cap.
+        for overridden in ('Host','Connection','Accept-Encoding'):
+            with patch.object(net,'resolve_public_answers',return_value=[answer]),patch.object(net,'PinnedHTTPConnection',return_value=conn):
+                net.post('https://api.example.com/v1/chat',b'{}',{overridden:'evil'},1024)
+            self.assertEqual(conn.request.call_args[1]['headers'][overridden],
+                             {'Host':'api.example.com','Connection':'close',
+                              'Accept-Encoding':'identity'}[overridden])
+    def test_post_refuses_a_redirect_instead_of_following_it(self):
+        with patch.object(net,'fetch_once',return_value=(None,'https://elsewhere.example/v1')):
+            with self.assertRaises(ValueError):
+                net.post('https://api.example.com/v1/chat',b'{}',{'Authorization':'Bearer t'},1024)
+    def test_timeout_is_seconds_not_an_absolute_moment(self):
+        # A caller passing 12 means "twelve seconds from now". Treating it as an
+        # absolute deadline made every request fail instantly and report only
+        # "deadline", which read as an unreachable provider.
+        seen={}
+        def fake(url,limit,deadline=None,headers=None,method='GET',body=None):
+            seen['deadline']=deadline
+            return (b'{}',None)
+        before=time.monotonic()
+        with patch.object(net,'fetch_once',side_effect=fake):
+            net.request('https://api.example.com/v1/models','GET',1024,None,None,12.0)
+        self.assertGreater(seen['deadline'], before)
+        self.assertLessEqual(seen['deadline'], time.monotonic()+12.5)
+        for bad in (0,-1,'12'):
+            with self.assertRaises(ValueError):
+                net.request('https://api.example.com/v1/models','GET',1024,None,None,bad)
 
 class Replies(unittest.TestCase):
     def setUp(self):self.k=module('omapager-kdeconnect')
@@ -345,5 +389,137 @@ class Raster(unittest.TestCase):
                         self.assertEqual(im.format,'PNG')
                         self.assertLessEqual(max(im.size),128)
                     self.assertEqual(Path(path).stat().st_mode&0o777,0o600)
+
+class CjkCodes(unittest.TestCase):
+    """The Python mirror must agree with Detect.js on CJK, or a code that the
+    card offers would not be redacted on its way to disk."""
+    def setUp(self):
+        self.store = module('omapager-store')
+    def test_cjk_verification_texts_are_codes(self):
+        for text in ['【某某】您的验证码是123456，5分钟内有效。',
+                     '验证码：654321，请勿泄漏',
+                     '您的驗證碼為 938271',
+                     '您的激活码是 A9F3K2，请在30天内使用',
+                     '認証コードは 482913 です',
+                     '인증번호 938271 을 입력하세요']:
+            with self.subTest(text=text):
+                self.assertTrue(self.store.looks_like_a_code(text))
+    def test_ordinary_cjk_text_is_not_a_code(self):
+        for text in ['密码错误，请重试', '您的快递已到，取件码1234', 'パスワードが違います']:
+            with self.subTest(text=text):
+                self.assertFalse(self.store.looks_like_a_code(text))
+    def test_a_cjk_code_redacts_the_stored_row(self):
+        entry = {'key': 'zh1', 'summary': '短信', 'body': '您的验证码是 938271，请勿泄漏'}
+        clean = self.store.sanitise(entry)
+        self.assertEqual(clean['summary'], 'Verification notification')
+        self.assertEqual(clean['body'], '[redacted]')
+        self.assertNotIn('938271', str(clean))
+
+class ModelPrompt(unittest.TestCase):
+    """The model can only answer "is this a duplicate" if it is shown both.
+
+    It used to be asked that question while being shown only the new message,
+    so it answered "no" every time and the duplicate stage could never fire.
+    """
+    def setUp(self):
+        self.llm = module('omapager-llm')
+        self.seen = {}
+    def _capture(self, url, path, body, api_key, method='POST'):
+        self.seen['body'] = json.loads(body)
+        return json.dumps({"choices": [{"message": {"content":
+            '{"duplicate": true, "buttons": [{"kind": "link", "value": "https://x"}]}'}}]}).encode()
+    def test_pair_prompt_carries_both_notifications(self):
+        with patch.object(self.llm, '_request', side_effect=self._capture):
+            answer = self.llm.ask('custom', 'https://example.com/v1', 'm',
+                                  'B body text', 'k', 'A body text')
+        prompt = self.seen['body']['messages'][0]['content']
+        self.assertIn('<<<A', prompt)
+        self.assertIn('<<<B', prompt)
+        self.assertIn('A body text', prompt)
+        self.assertIn('B body text', prompt)
+        self.assertIn('duplicate', prompt)
+        self.assertTrue(answer['duplicate'])
+    def test_single_prompt_does_not_invite_a_duplicate_guess(self):
+        with patch.object(self.llm, '_request', side_effect=self._capture):
+            self.llm.ask('custom', 'https://example.com/v1', 'm', 'only text', 'k', None)
+        prompt = self.seen['body']['messages'][0]['content']
+        self.assertNotIn('<<<A', prompt)
+        self.assertIn('only text', prompt)
+        self.assertIn('always false', prompt)
+    def test_systemone_judge_posts_one_question_and_thresholds(self):
+        seen = {}
+        def capture(url, path, body, key, method='POST'):
+            seen['url'] = url
+            seen['path'] = path
+            seen['body'] = json.loads(body)
+            value = seen.pop('noul', 0.9)
+            return json.dumps({'answers': {'same_event': {'type': 'noul', 'noul': value}}}).encode()
+        with patch.object(self.llm, '_request', side_effect=capture):
+            seen_noul = None
+            result = self.llm.judge('custom', 'https://example.com/v1', 'group/jev',
+                                    'B text', 'k', 'A text')
+        self.assertEqual(seen['path'], '/systemone')
+        self.assertEqual(seen['body']['model'], 'group/jev')
+        self.assertEqual(set(seen['body']['questions']), {'same_event'})
+        self.assertEqual(seen['body']['questions']['same_event']['type'], 'noul')
+        self.assertEqual(seen['body']['state'], {'a': 'A text', 'b': 'B text'})
+        self.assertTrue(result['duplicate'])
+        self.assertGreaterEqual(result['noul'], self.llm.NOUL_YES)
+        # The threshold is a decision, so it is asserted rather than assumed.
+        for value, expected in ((0.03, False), (0.699, False), (0.7, True), (0.99, True)):
+            seen['noul'] = value
+            with patch.object(self.llm, '_request', side_effect=capture):
+                self.assertIs(self.llm.judge('custom', 'https://example.com/v1', 'g', 'B', 'k', 'A')['duplicate'],
+                              expected, value)
+    def test_systemone_answer_must_be_a_probability(self):
+        for payload in ({'answers': {}},
+                        {'answers': {'same_event': {'noul': 'yes'}}},
+                        {'answers': {'same_event': {'noul': True}}},
+                        {}):
+            with self.subTest(payload=payload):
+                with patch.object(self.llm, '_request',
+                                  return_value=json.dumps(payload).encode()):
+                    with self.assertRaises(ValueError):
+                        self.llm.judge('custom', 'https://example.com/v1', 'g', 'B', 'k', 'A')
+    def test_unparseable_answers_are_empty_not_errors(self):
+        for content in ('', 'no json here', '```json\n{}\n```', '{"duplicate": "yes"}'):
+            with self.subTest(content=content):
+                answer = self.llm.normalise(content)
+                self.assertIn('duplicate', answer)
+                self.assertIsInstance(answer['buttons'], list)
+                self.assertIs(answer['duplicate'], False)
+
+class Sensitive(unittest.TestCase):
+    def setUp(self):
+        self.store=module('omapager-store')
+    def test_credentials_are_detected_and_personal_data_is_optional(self):
+        for text in ['token '+'sk-'+'a'*30, 'github '+'ghp_'+'a'*36,
+                     'redis://:'+'hunter2'+'@cache:6379',
+                     'jwt '+'eyJ'+'a'*10+'.eyJ'+'b'*10+'.'+'c'*10,
+                     'card 4111111111111111']:
+            with self.subTest(text=text):
+                self.assertTrue(self.store.contains_sensitive(text))
+        # Personal data is hidden on screen but not used to blank a history row.
+        for text in ['mail user@example.com', 'phone +1 415 555 0100']:
+            with self.subTest(text=text):
+                self.assertFalse(self.store.contains_sensitive(text))
+                self.assertTrue(self.store.contains_sensitive(text, personal=True))
+    def test_ordinary_text_is_not_a_credential(self):
+        for text in ['code 412 passed', 'Claude Code 412', 'build 1234 5678 9012 3456',
+                     'version 1.2.3', 'nothing to see here']:
+            with self.subTest(text=text):
+                self.assertFalse(self.store.contains_sensitive(text))
+    def test_credential_redacts_the_whole_entry_but_keeps_the_key(self):
+        entry={'key':'k1','summary':'Here is your key','body':'token sk-'+'a'*30,
+               'rawBody':'token sk-'+'a'*30,'bodyLine':'token sk-'+'a'*30,'app':'Terminal'}
+        clean=self.store.sanitise(entry)
+        self.assertEqual(clean['key'],'k1')
+        self.assertEqual(clean['summary'],'Verification notification')
+        self.assertEqual(clean['body'],'[redacted]')
+        self.assertNotIn('sk-',''.join(str(v) for v in clean.values()))
+    def test_personal_data_alone_does_not_destroy_a_history_row(self):
+        entry={'key':'k2','summary':'Thanks','body':'reply to user@example.com please'}
+        clean=self.store.sanitise(entry)
+        self.assertEqual(clean['body'],'reply to user@example.com please')
 
 if __name__=='__main__':unittest.main()

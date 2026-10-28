@@ -24,6 +24,16 @@ for path in [*ROOT.glob('*.qml'),*ROOT.glob('*.js'),*(ROOT/'bin').glob('*')]:
     if re.search(r'''["'](?:ba)?sh["']\s*,\s*["']-c["']''',text):errors.append(rel+': command shell')
     if re.search(r'urllib\.request|OPENER\.open|urlopen\(',text):errors.append(rel+': unpinned network client')
     if 'console.log(' in text:errors.append(rel+': notification logging')
+    # One transport. A second http.client would be a second place to forget the
+    # address validation, so the only raw connections allowed are in the
+    # transport itself and in the model helper, which must keep its literal
+    # loopback guard: a hostname there would be resolved instead of compared.
+    if 'http.client.HTTPConnection(' in text and rel not in ('bin/omapager_http.py','bin/omapager-llm'):
+        errors.append(rel+': second HTTP client')
+    if rel=='bin/omapager-llm' and 'ipaddress.ip_address' not in text:
+        errors.append(rel+': loopback check removed from the model helper')
+    if rel=='bin/omapager-llm' and 'is_loopback' not in text:
+        errors.append(rel+': loopback check no longer requires a loopback address')
     if path.suffix=='.py' or text.startswith('#!/usr/bin/env python3') or text.startswith('#!/usr/bin/python3'):
         tree=ast.parse(text)
         for n in ast.walk(tree):

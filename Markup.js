@@ -183,6 +183,41 @@ function identify(row, hints) {
   }
 }
 
+// A comparison key for "is this the same message from another source".
+//
+// Deliberately lossy: case, punctuation, whitespace, URLs and digits' grouping
+// all vary between the copy Slack got and the copy the mail client got, and
+// none of them change what was said. What survives is the words. Numbers are
+// kept because a "build 412" and a "build 413" are different messages, but
+// their formatting is not, so digit runs are compared unspaced.
+function dedupeKey(row) {
+  var text = String(row.summary || "") + " " + String(row.bodyLine || row.body || "")
+  return slugWords(text)
+}
+
+function slugWords(text) {
+  var body = String(text || "").toLowerCase()
+  // URLs first: their paths are unique per copy and would defeat the match.
+  body = body.replace(/https?:\/\/[^\s<>"']+/g, " ")
+  body = body.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")   // markdown links keep their text
+  body = body.replace(/[^a-z0-9 ]+/g, " ")
+  return body.replace(/\s+/g, " ").trim().slice(0, 512)
+}
+
+// How alike two messages are, 0..1, on word overlap. Used only when a cheap
+// exact-key comparison has already failed: the LLM layer asks for a second
+// opinion, but it is asked about a pair that already looks similar.
+function similarity(a, b) {
+  var left = slugWords(a).split(" "), right = slugWords(b).split(" ")
+  if (!left[0] || !right[0]) return 0
+  var seen = Object.create(null), shared = 0
+  for (var i = 0; i < left.length; i++) seen[left[i]] = (seen[left[i]] || 0) + 1
+  for (var j = 0; j < right.length; j++) {
+    if (seen[right[j]]) { seen[right[j]] -= 1; shared += 1 }
+  }
+  return shared / Math.max(left.length, right.length)
+}
+
 // The name of a thing, reduced to something that can be compared. Grouping on
 // the desktop-entry hint looked more principled and was worse in practice:
 // Chrome passes a per-session temp path ("file:///tmp/com.google.chrome.

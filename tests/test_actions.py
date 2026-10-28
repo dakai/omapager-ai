@@ -85,6 +85,60 @@ class NotificationActions(unittest.TestCase):
             with self.subTest(argv=argv), self.assertRaises(ValueError):
                 actions.action_command(argv)
 
+    def test_file_manager_verbs_use_the_same_path_policy(self):
+        file = self.root / 'saved file.txt'
+        file.write_text('saved')
+        # Auto routes through FileManager1 with an encoded URI, never a shell.
+        reveal = actions.action_command(['fm', 'reveal', str(file), 'auto'])
+        self.assertEqual(reveal[:6], ['/usr/bin/busctl', '--user', 'call',
+                                      'org.freedesktop.FileManager1',
+                                      '/org/freedesktop/FileManager1',
+                                      'org.freedesktop.FileManager1'])
+        self.assertIn('ShowItems', reveal)
+        self.assertIn(file.as_uri(), reveal)
+        properties = actions.action_command(['fm', 'properties', str(file), 'auto'])
+        self.assertIn('ShowItemProperties', properties)
+        # A named manager selects the file rather than only its folder.
+        with patch('os.access', return_value=True):
+            dolphin = actions.action_command(['fm', 'reveal', str(file), 'dolphin'])
+            self.assertEqual(dolphin[:2], ['/usr/bin/dolphin', '--select'])
+            self.assertEqual(dolphin[2], str(file))
+            thunar = actions.action_command(['fm', 'properties', str(file), 'thunar'])
+            self.assertEqual(thunar[:2], ['/usr/bin/thunar', '--properties'])
+        # A missing manager is refused rather than falling back to something
+        # the user did not choose.
+        with patch('os.access', return_value=False):
+            with self.assertRaises(ValueError):
+                actions.action_command(['fm', 'reveal', str(file), 'nemo'])
+
+    def test_file_manager_refuses_traversal_unknown_verbs_and_managers(self):
+        file = self.root / 'saved.txt'
+        file.write_text('saved')
+        executable = self.root / 'script.sh'
+        executable.write_text('#!/bin/sh\n')
+        executable.chmod(0o755)
+        for argv in [
+            ['fm', 'reveal', 'https://example.com/x', 'auto'],
+            ['fm', 'reveal', str(self.root / '..' / 'etc' / 'passwd'), 'auto'],
+            ['fm', 'reveal', str(file), 'bogus'],
+            ['fm', 'delete', str(file), 'auto'],
+            ['fm', 'reveal', str(file)],
+            ['fm', 'reveal', str(file), 'auto', 'extra'],
+            ['fm', 'reveal', str(executable), 'auto'],
+        ]:
+            with self.subTest(argv=argv), self.assertRaises(ValueError):
+                actions.action_command(argv)
+        # A missing file is not a policy failure: the path was fine, the file
+        # is gone, and the caller sees the same OSError every other verb raises.
+        with self.assertRaises(FileNotFoundError):
+            actions.action_command(['fm', 'reveal', str(self.root / 'missing.txt'), 'auto'])
+
+    def test_file_manager_open_still_uses_the_encoded_uri(self):
+        file = self.root / 'résumé #1?.txt'
+        file.write_text('saved')
+        self.assertEqual(actions.action_command(['fm', 'open', str(file), 'auto']),
+                         ['/usr/bin/xdg-open', file.as_uri()])
+
 
 if __name__ == '__main__':
     unittest.main()

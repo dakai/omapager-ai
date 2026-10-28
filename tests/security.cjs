@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict'), fs=require('node:fs'), load=require('./js-loader.cjs');
-const S=load('Security'), M=load('Markup'), D=load('Detect'), Store=load('Store');
+const S=load('Security'), M=load('Markup'), D=load('Detect'), Store=load('Store'), R=load('Redact');
 const bad=['https://paypal.com@evil.example','https://user:pass@example.com','javascript:alert(1)','file:///etc/passwd','smb://server/share','data:text/html,test','https://example.com/\n','https://example.com/%0d%0a','https://example.com/%250a','https://example.com%40evil.example','https://[::1]','https://127.1','https://éxample.com','https://example..com','https://example.com:99999','https://example.com\\@evil.example','https://example.com/'+ 'x'.repeat(4096)];
 for (const u of bad) {
  assert.equal(S.safeExternalUrl(u),'',u);
@@ -92,12 +92,15 @@ function extract(src, startMarker, endMarker) {
 const capacitySource = [
   extract(source, 'function pinDeckDisplay()', '\n  // A verification code'),
   extract(source, 'function fullscreenOn(name)', '\n  Connections {'),
+  extract(source, 'function pruneDedupe(now)', '// A small session-only reading stack'),
   extract(source, 'function rememberRecent(row)', '// ------------------------------------------------------- what was held'),
   extract(source, 'function durationFor(urgency, requested)', '// ------------------------------------------------------------- snooze'),
-  extract(source, 'function liveCount()', '// ------------------------------------------------------------- icons'),
+  extract(source, 'function liveCount()', '// ------------------------------------------------------------- model layer'),
   extract(source, 'function wantSenderImage(row)', '\n  Process {'),
   extract(source, 'function nextKey()', '// ------------------------------------------------------------- arrival'),
   extract(source, 'function handleNotification(notification)', '// Qt.callLater: mutating the model'),
+  extract(source, 'function llmSuggestion(row, want, text)', 'function llmDeeds(key)'),
+  extract(source, 'function similarLiveRow(row)', '// ------------------------------------------------------------- icons'),
   extract(source, 'function showRow(row)', "// Let go of the sender's object"),
   extract(source, 'function release(key, reason)', '// ------------------------------------------------------------- departure'),
   extract(source, 'function closeToast(key, reason)', '// What the sender said can be done'),
@@ -127,11 +130,17 @@ function newCapacityScope() {
     snoozeRevision: 0, snoozes: {},
     codesBypassQuiet: false, hideSettingsAction: false,
     lowDuration: 5000, normalDuration: 8000, maxDuration: 30000,
+    sensitiveFilter: 'off',
+    recentDedupe: [], dedupeWindowSeconds: 120, llmDedupe: false,
     snoozedUntil: key => s.snoozes[key] || 0,
     liveSnoozes: () => Object.keys(s.snoozes).map(key => ({ key })),
     storeProc: {}, storeBin: '', wantIcon: () => {},
-    lookForReply: () => {}, Security: S,
-    Store: { ...Store, write: () => {} },
+    lookForReply: () => {}, Security: S, Markup: M,
+    llmAsk: () => {}, llmDeeds: () => [], llmRevision: 0, llmIntent: false, llmDedupe: false,
+    allowDefaultActionOnCardClick: false,
+    duplicateSimilarity: 0.6,
+    writes: [],
+    Store: { ...Store, write: (proc, bin, verb, payload, args) => { if (verb === 'put') s.writes.push(payload) } },
     NotificationUrgency: { Critical: 2, Normal: 1, Low: 0 },
     Qt: { callLater: fn => later.push(fn),
       md5: value => require('node:crypto').createHash('md5').update(value).digest('hex') },
@@ -202,6 +211,266 @@ function newCapacityScope() {
   assert.equal(s.routeAround('game'), 'work');
   s.fullscreenAway = false;
   assert.equal(s.routeAround('game'), 'game');
+}
+
+{ // The same message from two sources shows one card; one source twice does not.
+  const s = newCapacityScope();
+  const send = (id, app, summary, body, urgency = 1) => {
+    const n = s.fakeNotification(id, summary, urgency);
+    n.appName = app;
+    n.body = body;
+    s.handleNotification(n);
+    s.drainCallLater();
+    return n;
+  };
+  send(1, 'Slack', 'Deploy failed', 'Build 412 failed on main. https://ci.example.com/1');
+  assert.equal(s.toasts.count, 1);
+  // Same words, different app, different URL: one card.
+  send(2, 'Thunderbird', 'Deploy failed', 'Build 412 failed on main. https://gitlab.example.com/x/2');
+  assert.equal(s.toasts.count, 1, 'a cross-source duplicate takes no card');
+  // Same app again: that app is talking twice, which is its own message.
+  send(3, 'Slack', 'Deploy failed', 'Build 413 failed on main.');
+  assert.equal(s.toasts.count, 2, 'the same source is never deduplicated against itself');
+  // A different build from another source is a different message.
+  send(4, 'Thunderbird', 'Deploy failed', 'Build 999 failed on main.');
+  assert.equal(s.toasts.count, 3, 'different words are different messages');
+  // Critical is exempt even when the words match another source exactly.
+  send(5, 'PagerDuty', 'Deploy failed', 'Build 999 failed on main.', 2);
+  assert.equal(s.toasts.count, 4, 'critical notifications are never swallowed');
+}
+
+{ // Dismissing the original lets the repeat be said again.
+  const s = newCapacityScope();
+  const first = s.fakeNotification(1, 'Same words');
+  first.appName = 'Slack'; first.body = 'identical text';
+  s.handleNotification(first); s.drainCallLater();
+  const key = s.toasts.rows[0].key;
+  const second = s.fakeNotification(2, 'Same words');
+  second.appName = 'Mail'; second.body = 'identical text';
+  s.handleNotification(second); s.drainCallLater();
+  assert.equal(s.toasts.count, 1, 'duplicate suppressed while the original is up');
+  s.closeToast(key, 'dismissed');
+  s.finishClose(key, 'dismissed');
+  const third = s.fakeNotification(3, 'Same words');
+  third.appName = 'Mail'; third.body = 'identical text';
+  s.handleNotification(third); s.drainCallLater();
+  assert.equal(s.toasts.count, 1, 'the repeat is shown once the original is gone');
+}
+
+{ // The sensitive filter reports spans, and both display modes agree on them.
+  const credential = 'token sk-' + 'a'.repeat(30);
+  assert.equal(R.count(credential, []), 1, 'an API key is found');
+  assert.equal(R.redact(credential, [], false), 'token ' + R.MASK)
+  assert.equal(R.redact(credential, [], true), 'token ' + R.MASK + ' (API_KEY)')
+
+  // Every rule layer family, and the shapes each one must not swallow.
+  const found = [
+    ['ghp_' + 'a'.repeat(36), 'API_KEY'],
+    ['AIza' + 'a'.repeat(35), 'API_KEY'],
+    ['xoxb-' + 'a'.repeat(12), 'API_KEY'],
+    ['eyJ' + 'a'.repeat(10) + '.eyJ' + 'b'.repeat(10) + '.' + 'c'.repeat(10), 'TOKEN'],
+    ['redis://:hunter2@cache:6379', 'PASSWORD'],
+    ['user@example.com', 'EMAIL'],
+    ['4111111111111111', 'CARD'],
+    ['+44 7911 123456', 'PHONE'],
+    ['DE89 3704 0044 0532 0130 00', 'IBAN']
+  ];
+  for (const [text, kind] of found) {
+    assert.ok(R.scan(text, []).some(span => span.kind === kind),
+              kind + ' should be found in ' + JSON.stringify(text));
+  }
+  // Ordinary text is not a secret, and the two shapes most likely to be
+  // mistaken for one - a six-digit login code and a product name with a number.
+  for (const text of ['code 412 passed', 'Claude Code 412', 'build 1234 5678 9012 3456',
+                      'version 1.2.3', 'nothing to see here']) {
+    assert.equal(R.count(text, []), 0, JSON.stringify(text) + ' is not a credential');
+  }
+  // A password inside a URL is masked without hiding the host it belongs to.
+  const url = R.redact('redis://:hunter2@cache:6379', [], false);
+  assert.ok(url.indexOf('cache:6379') > 0, 'the host survives');
+  assert.equal(url.indexOf('hunter2'), -1, 'the secret does not');
+
+  // The caller's own words are masked too, and long input stays bounded.
+  assert.equal(R.count('the project is Nightjar', ['Nightjar']), 1);
+  const huge = 'x'.repeat(40000) + ' sk-' + 'a'.repeat(30);
+  assert.ok(R.scan(huge, []).length === 0, 'the scan is bounded to MAX_TEXT');
+  // Overlapping rules cannot double-mask the same characters.
+  const spans = R.scan('sk-' + 'a'.repeat(30) + '@example.com', []);
+  for (let i = 1; i < spans.length; i++)
+    assert.ok(spans[i].start >= spans[i - 1].end, 'spans never overlap');
+}
+
+{ // The display filter masks the card, and never the fields it derived itself.
+  const row = Store.snapshot({ id: 1, appName: 'Terminal', summary: 'Your key',
+                               body: 'token sk-' + 'a'.repeat(30), urgency: 1,
+                               hints: {}, actions: [] }, 'k', { Normal: 1 });
+  assert.equal(Store.filterSensitive(row, 'off').body, row.body, 'off changes nothing');
+  const masked = Store.filterSensitive(row, 'mask');
+  assert.equal(masked.body.indexOf('sk-'), -1, 'the card does not draw the key');
+  assert.ok(masked.body.length > 0, 'the sentence is still readable');
+  // Rich text is regenerated from the filtered body rather than filtered again,
+  // so its own markup cannot be mistaken for the credential.
+  assert.equal(masked.bodyRich, M.render(masked.body));
+  assert.ok(masked.bodyRich.indexOf(R.MASK) > 0);
+}
+
+{ // The card is masked; what reaches the store is not.
+  const s = newCapacityScope();
+  s.sensitiveFilter = 'mask';
+  const n = s.fakeNotification(1, 'Your key');
+  n.appName = 'Terminal';
+  n.body = 'token sk-' + 'a'.repeat(30);
+  s.handleNotification(n);
+  s.drainCallLater();
+  // What is drawn is masked.
+  const drawn = s.toasts.rows[0].body;
+  assert.equal(drawn.indexOf('sk-'), -1, 'the card does not draw the key');
+  assert.ok(drawn.indexOf('••••••') >= 0, 'the card shows the mask');
+  // What was handed to the store is the real text: the Python store does its
+  // own redaction, and a masked body would make two messages look identical
+  // and would write the mask into history.
+  const stored = s.writes.filter(payload => payload && payload.key === s.toasts.rows[0].key).pop();
+  assert.ok(stored, 'the row was written');
+  assert.ok(String(stored.body).indexOf('sk-') >= 0,
+            'the store receives the unfiltered text');
+  assert.equal(String(stored.body).indexOf('••••••'), -1,
+               'the display mask never reaches disk through this path');
+}
+
+{ // A code in a summary must not be re-read as a shorter code by the window.
+  // The 24-character look-behind used to slice "654321" into "54321", which
+  // passed the shape test and became the button the user actually got.
+  const cases = [
+    ['654321\nYour verification code for Example is 654321', ['654321']],
+    ['999999\nYour verification code for Example is 111111', ['999999', '111111']],
+    ['Your verification code is 654321. Do not share it.', ['654321']],
+    ['code 482913, backup code 771204', ['482913', '771204']],
+    ['Your code is 482913', ['482913']],
+    ['Call 07911 123 456 about your code', []]
+  ];
+  for (const [text, want] of cases) {
+    assert.deepEqual(Array.from(D.codes(text)), want, JSON.stringify(text));
+  }
+  // Chinese, Japanese and Korean verification texts. CJK has no word
+  // boundaries, so an ASCII-only keyword list never matches any of these - the
+  // SMS arrives with a code and the card offers nothing.
+  const cjk = [
+    ['【某某】您的验证码是123456，5分钟内有效。', ['123456']],
+    ['验证码：654321，请勿泄漏', ['654321']],
+    ['您的驗證碼為 938271', ['938271']],
+    ['您的激活码是 A9F3K2，请在30天内使用', ['A9F3K2']],
+    ['短信验证码 482-913', ['482913']],
+    ['認証コードは 482913 です', ['482913']],
+    ['인증번호 938271 을 입력하세요', ['938271']]
+  ];
+  for (const [text, want] of cjk) {
+    assert.deepEqual(Array.from(D.codes(text)), want, JSON.stringify(text));
+  }
+  // Ordinary CJK text is not a code: 密码 alone means any password, and a
+  // parcel pickup number is not a login code.
+  for (const text of ['密码错误，请重试', '您的快递已到，取件码1234', 'パスワードが違います']) {
+    assert.deepEqual(Array.from(D.codes(text)), [], JSON.stringify(text));
+  }
+
+  // A phone number's digits are not codes, and the number is still a phone.
+  const sms = Store.snapshot({ id: 1, appName: 'KDE Connect', summary: 'SMS from +441234567890',
+                               body: 'Your verification code is 654321. Do not share it.',
+                               image: '', hints: {}, actions: [], urgency: 1, expireTimeout: 0 },
+                             'sms', { Normal: 1, Low: 0, Critical: 2 });
+  assert.equal(sms.codes, '654321', 'the real code, and only it');
+  assert.equal(sms.phone, '+441234567890');
+}
+
+{ // A model suggestion may point at the row's own text and nothing else.
+  const s = newCapacityScope();
+  const row = { summary: 'Deploy failed', body: 'Build 412 failed. See https://ci.example.com/1',
+                codes: '', link: 'https://ci.example.com/1', phone: '', filePath: '',
+                meeting: false };
+  const text = row.summary + '\n' + row.body;
+
+  // A link the notification already carried, quoted back: accepted, and
+  // re-validated rather than trusted as given.
+  const link = s.llmSuggestion(row, { kind: 'link', value: 'https://ci.example.com/1' }, text);
+  assert.equal(link, null, 'a link the row already offers adds nothing');
+
+  // A URL that was never in the text: refused.
+  assert.equal(s.llmSuggestion(row, { kind: 'link', value: 'https://evil.example/x' }, text), null,
+               'a suggestion must quote the text');
+  // A link-shaped value that fails the URL policy: refused even when quoted.
+  assert.equal(s.llmSuggestion(row, { kind: 'link', value: 'https://a@b' }, text), null,
+               'the URL policy still applies to suggestions');
+  // javascript: quoted from a hostile body is not a link.
+  assert.equal(s.llmSuggestion({ codes: '', link: '', phone: '', filePath: '' },
+                               { kind: 'link', value: 'javascript:alert(1)' },
+                               'click javascript:alert(1)'), null,
+               'schemes other than http(s) are refused');
+  // A path with traversal, quoted from the body.
+  assert.equal(s.llmSuggestion({ codes: '', link: '', phone: '', filePath: '' },
+                               { kind: 'file', value: '/etc/../etc/passwd' },
+                               'saved /etc/../etc/passwd'), null,
+               'traversal is refused even when the text contains it');
+  // Reply and action are never accepted: those belong to the sender.
+  assert.equal(s.llmSuggestion(row, { kind: 'reply', value: 'x' }, text), null,
+               'reply cannot be suggested');
+  assert.equal(s.llmSuggestion(row, { kind: 'action', value: 'open' }, text), null,
+               'actions cannot be suggested');
+  // A code that appears in the text and is not already offered: accepted.
+  const withCode = { codes: '', link: '', phone: '', filePath: '', summary: 'Your code is 482913',
+                     body: 'Your code is 482913, expires in 10 minutes' };
+  const codeOffer = s.llmSuggestion(withCode, { kind: 'code', value: '482913' },
+                                    withCode.summary + '\n' + withCode.body)
+  assert.equal(codeOffer.kind, 'code');
+  assert.equal(codeOffer.value, '482913');
+  assert.equal(codeOffer.label, 'Copy 482913');
+  // A phone number quoted from the text.
+  const withPhone = { codes: '', link: '', phone: '', filePath: '', summary: 'Call us',
+                      body: 'Call us on +44 7911 123456' };
+  assert.equal(s.llmSuggestion(withPhone, { kind: 'phone', value: '+44 7911 123456' },
+                               withPhone.summary + '\n' + withPhone.body).kind, 'phone');
+  // Non-string values and oversize values are dropped before the checks.
+  assert.equal(s.llmSuggestion(row, { kind: 'link', value: 42 }, text), null);
+  assert.equal(s.llmSuggestion(row, { kind: 'link', value: 'x'.repeat(4096) }, text), null);
+}
+
+{ // The model's "duplicate" verdict is checked by word overlap, not equality.
+  // The two cards in the report that started this: same event, different app,
+  // different prefix, so the exact-key stage cannot match them.
+  const s = newCapacityScope();
+  const first = s.fakeNotification(1, 'Fork Client');
+  first.appName = 'Fork Client';
+  first.body = 'Hermes Group: Hermes Agent: ⏳ Working — 3 min — iteration 10/500, starting API call #10';
+  s.handleNotification(first);
+  s.drainCallLater();
+
+  const second = s.fakeNotification(2, 'Link Building (Hermes Group)');
+  second.appName = 'Forkgram Desktop';
+  second.body = 'Hermes Agent ⏳ Working — 3 min — iteration 10/500, starting API call #10';
+  const row = s.Store.snapshot(second, 'second', { Normal: 1, Low: 0, Critical: 2 });
+  assert.notEqual(s.Markup.dedupeKey(s.toasts.rows[0]), s.Markup.dedupeKey(row),
+                  'the two are not word-for-word equal, so the local stage leaves them alone');
+  assert.equal(s.similarLiveRow(row), s.toasts.rows[0].key,
+               'but they are the same message, so a duplicate verdict applies');
+
+  // A different iteration is a different message even from another source.
+  const third = s.fakeNotification(3, 'Link Building (Hermes Group)');
+  third.appName = 'Forkgram Desktop';
+  third.body = 'Hermes Agent ⏳ Working — 3 min — iteration 11/500, starting API call #11';
+  const other = s.Store.snapshot(third, 'third', { Normal: 1, Low: 0, Critical: 2 });
+  assert.equal(s.similarLiveRow(other), s.toasts.rows[0].key,
+               'a single changed counter still reads as the same event');
+
+  // Words that share nothing are not merged.
+  const unrelated = s.Store.snapshot(
+    { id: 4, appName: 'Mail', summary: 'Invoice', body: 'Your invoice is attached',
+      urgency: 1, hints: {}, actions: [] }, 'fourth', { Normal: 1, Low: 0, Critical: 2 });
+  assert.equal(s.similarLiveRow(unrelated), '', 'unrelated text is never merged');
+
+  // The same source is never compared against itself.
+  const sameSource = s.fakeNotification(5, 'Fork Client');
+  sameSource.appName = 'Fork Client';
+  sameSource.body = first.body;
+  const same = s.Store.snapshot(sameSource, 'fifth', { Normal: 1, Low: 0, Critical: 2 });
+  assert.equal(s.similarLiveRow(same), '', 'one app talking twice is not a duplicate');
 }
 
 { // Rapid single dismissals must skip rows still playing their exit animation.
@@ -312,7 +581,12 @@ function newCapacityScope() {
   assert.equal(s.recentRows[0].bodyLine, 'Latest text');
 }
 
-{ // A code must not outlive its toast, even in source metadata used for filtering.
+{ // A code in Recent: redacted as text, kept only as an offer.
+  // The boundary moved deliberately. Recent is a reading list the panel now
+  // offers actions for, and "copy the code from the SMS I missed" is the whole
+  // point - so the detected value is kept in memory for the row's session
+  // lifetime, and nowhere else. What must stay true: the text drawn from the
+  // row is the redacted text, and the row never reaches disk carrying it.
   const s = newCapacityScope();
   const code = s.fakeNotification(1, 'Your verification code is 938271');
   code.appName = 'Source 938271';
@@ -320,10 +594,45 @@ function newCapacityScope() {
   s.drainCallLater();
   const key = s.keyForOriginal(1), group = s.toasts.get(0).groupKey;
   s.finishClose(key, 'expired');
-  assert.equal(s.recentForPanel(5)[0].bodyLine, '[redacted]');
-  assert.ok(!JSON.stringify(s.recentRows).includes('938271'));
+
+  const row = s.recentForPanel(5)[0];
+  assert.equal(row.bodyLine, '[redacted]', 'the drawn text is redacted');
+  assert.equal(row.summary, 'Verification notification');
+  assert.equal(row.codes, '938271', 'the offer survives, for the button');
+  assert.equal(row.source, 'Notification', 'source metadata carries no code');
+  // Store.write runs sanitiseForPersistence before the payload leaves this
+  // process; the stub here sees the pre-sanitised argument, so the check is
+  // what that function produces - which is what the helper would receive.
+  const handed = s.writes.filter(payload => payload && payload.key === key).pop();
+  assert.ok(handed, 'the row was written');
+  assert.ok(!JSON.stringify(Store.sanitiseForPersistence(handed)).includes('938271'),
+            'nothing written to the store carries the code');
+
+
   s.snoozes[group] = 1;
   assert.equal(s.recentForPanel(5).length, 0);
+}
+
+{ // A recent row will not act on a value it does not carry.
+  const s = newCapacityScope();
+  const copied = [];
+  s.copyText = (value, sensitive) => copied.push({ value: value, sensitive: sensitive });
+  s.Security = { openExternalUrl: url => { copied.push({ opened: url }); return true } };
+  s.recentRows = [{ key: 'r1', groupKey: 'app:x', source: 'x', summary: 's',
+                    bodyLine: 'b', ts: 1, codes: '482913', link: 'https://a.example/',
+                    phone: '+441234567890', urgency: 1 }];
+  assert.equal(s.recentOffer('code', '999999', 'r1'), false, 'a code not in the row is refused');
+  assert.equal(s.recentOffer('code', '482913', 'r1'), true);
+  assert.equal(copied[0].value, '482913');
+  assert.equal(copied[0].sensitive, true, 'a code is copied as a secret');
+  assert.equal(s.recentOffer('phone', '123', 'r1'), false);
+  assert.equal(s.recentOffer('link', 'https://evil.example/', 'r1'), false,
+               'a link not in the row is refused');
+  assert.equal(s.recentOffer('link', 'https://a.example/', 'r1'), true);
+  assert.equal(s.recentOffer('code', '482913', 'no-such-row'), false);
+  // Remove is local to the reading list and touches nothing else.
+  assert.equal(s.recentOffer('forget', '', 'r1'), true);
+  assert.equal(s.recentRows.length, 0, 'the row is dropped from Recent');
 }
 
 { // Full quiet hides the entire recent list and held arrivals never backfill it.

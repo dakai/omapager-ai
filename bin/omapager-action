@@ -10,6 +10,14 @@ import sys
 def local_file_uri(value):
     # Keep this grammar aligned with Security.safeLocalFilePath. Filesystem
     # checks happen here, at activation, not when the notification arrives.
+    path = local_file_path(value)
+    # An encoded file URI cannot become an option or another URI scheme.
+    # The desktop application reopens the file: this is not isolation from
+    # another same-user process racing a rename after validation.
+    return path.as_uri()
+
+
+def local_file_path(value):
     if (len(value) > 4096 or not re.match(r"/[^/]", value)
             or re.search(r"[\x00-\x1f\x7f-\x9f\\]", value)
             or re.search(r"/(?:\.|\.\.)(?:/|$)", value)
@@ -20,19 +28,63 @@ def local_file_uri(value):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o111:
         raise ValueError("expected a non-executable regular file")
-    # An encoded file URI cannot become an option or another URI scheme.
-    # The desktop application reopens the file: this is not isolation from
-    # another same-user process racing a rename after validation.
-    return path.as_uri()
+    return path
+
+
+# The file-manager verbs. There is no way to embed another application's real
+# context menu in a notification surface, so these are the four things that
+# menu is actually used for on a file somebody was just told about. "auto"
+# means the desktop's registered file manager over FileManager1; a named one
+# is that application's own --select, which is what makes Dolphin select the
+# row rather than just open the folder.
+FILE_MANAGERS = {
+    "nautilus": "/usr/bin/nautilus",
+    "dolphin": "/usr/bin/dolphin",
+    "thunar": "/usr/bin/thunar",
+    "nemo": "/usr/bin/nemo",
+}
+
+
+def file_manager_command(verb, manager, value):
+    if verb not in ("reveal", "properties", "open"):
+        raise ValueError("unsupported file action")
+    if manager not in FILE_MANAGERS and manager != "auto":
+        raise ValueError("unsupported file manager")
+    path = local_file_path(value)
+    if verb == "open":
+        return ["/usr/bin/xdg-open", path.as_uri()]
+    if manager == "auto":
+        # The desktop's own file manager: FileManager1 is the interface every
+        # one of them implements, and it is what the desktop already routes
+        # "show in folder" through.
+        method = "ShowItemProperties" if verb == "properties" else "ShowItems"
+        return ["/usr/bin/busctl", "--user", "call", "org.freedesktop.FileManager1",
+                "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1",
+                method, "as", "1", path.as_uri(), "s", ""]
+    program = FILE_MANAGERS[manager]
+    if not os.access(program, os.X_OK):
+        raise ValueError("file manager unavailable")
+    if verb == "properties":
+        return [program, "--properties", str(path)]
+    return [program, "--select", str(path)]
 
 
 def action_command(argv):
-    if len(argv) != 2 or any(not isinstance(arg, str) for arg in argv):
-        raise ValueError("expected one action argument")
-    program, value = argv
+    if len(argv) < 2 or any(not isinstance(arg, str) for arg in argv):
+        raise ValueError("expected at least one action argument")
+    program, value = argv[0], argv[1]
     if program == "xdg-open":
+        if len(argv) != 2:
+            raise ValueError("expected one action argument")
         return ["/usr/bin/xdg-open", local_file_uri(value)]
+    if program == "fm":
+        if len(argv) != 4:
+            raise ValueError("expected a file action, a path and a manager")
+        verb, path, manager = argv[1], argv[2], argv[3]
+        return file_manager_command(verb, manager, path)
     if program == "omarchy-agent-crash":
+        if len(argv) != 2:
+            raise ValueError("expected one action argument")
         if not re.fullmatch(r"[1-9][0-9]{0,9}", value) or int(value) > 2147483647:
             raise ValueError("invalid crash PID")
         # OMARCHY_PATH is shell configuration, never notification input.

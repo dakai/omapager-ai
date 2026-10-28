@@ -125,6 +125,57 @@ One decoder runs at a time; pending jobs are bounded by the live-notification ca
 Replacement and dismissal invalidate old jobs. Sender pixels stay in memory,
 are not persisted, and rejection leaves the resolved-icon fallback available.
 
+## Sensitive text and the model layer
+
+Two additions share one rule: a value the desktop was told to hide must not be
+readable on screen, on disk, or on the wire.
+
+**Rule-layer redaction.** `Redact.js` and its Python mirror in `bin/omapager-store`
+find credential and personal-data *shapes* — private keys, API keys, tokens,
+connection-URL passwords, email addresses, IBANs, card numbers that pass Luhn,
+phone numbers — and report spans rather than rewriting text. The two
+implementations are deliberately separate: a bug in one must not be able to let a
+secret reach the screen and the disk at once, and their disagreement is what the
+corpus tests exist to catch.
+
+Persistence acts on credentials only. A message that signs off with an email
+address is still a message, and replacing a whole history row because of it would
+destroy the log the store exists to keep. The display filter (`sensitiveFilter`)
+can act on both, because hiding is reversible and forgetting is not. Neither
+layer is a model, and neither is a guarantee: recognition is heuristic, which is
+why it is a filter and not a boundary.
+
+**The model layer.** `bin/omapager-llm` asks an OpenAI-compatible endpoint one
+question per notification, after the card is already on screen. It is off until
+a provider is chosen. What comes back is advice:
+
+- A suggested button is accepted only if its value appears verbatim in the text
+  the card is already showing, and then re-validates through the same checks the
+  detected offers use (`safeHttpUrl`, `safeLocalFilePath`, the phone and code
+  grammars). `reply` and `action` are dropped outright — those belong to the
+  sender's action list, which the model cannot see or extend.
+- A duplicate verdict closes the newer card only when a different source's card
+  with identical normalised text is still on screen. The local exact-key check
+  runs first and needs no model at all.
+
+A prompt injected through a notification body can therefore make a card offer
+nothing useful. It cannot mint a capability, and it cannot reach a URL, a path or
+a command the notification did not already contain.
+
+**The key.** It lives in the desktop keyring through `bin/omapager-secret`
+(libsecret). It is never in `shell.json`, never in `~/.local/state/…`, never in
+argv, never in an error message, and never read back for display — the settings
+window only ever learns "set" or "not set". On a machine with no secret service
+the feature disables itself; there is no plaintext fallback.
+
+**Egress.** Remote endpoints are https on 443 through `omapager_http`, which
+validates every DNS answer before connecting and pins the numeric address; there
+is no urllib opener to route through an environment proxy. Redirects on an API
+call are refused rather than followed, because following one would carry the
+Authorization header to a host the user did not choose. A plain `http` endpoint is
+accepted only when the host is a literal loopback address, which is how a local
+model server works and where the traffic cannot leave the machine.
+
 ## Future separation
 
 An independent daemon could own D-Bus, policy and state and send only structured

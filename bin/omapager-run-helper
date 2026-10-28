@@ -21,7 +21,7 @@ HOME_DIR = Path.home()
 STATE = HOME_DIR / ".local/state/omarchy/omapager"
 BWRAP = Path("/usr/bin/bwrap")
 PYTHON = Path("/usr/bin/python3")
-HELPER_KINDS = frozenset(("store", "icon", "kdeconnect"))
+HELPER_KINDS = frozenset(("store", "icon", "kdeconnect", "llm", "secret"))
 TERMINATE_GRACE = 2
 SENDER_PATH_BYTES = 4096
 SENDER_IMAGE_BYTES = 1024 * 1024
@@ -173,6 +173,28 @@ def sandbox_command(kind, args, bwrap, environ):
             private_dir(demo)
             cmd += ["--ro-bind" if args[0] == "find" else "--bind",
                     str(demo), str(demo)]
+    elif kind == "secret":
+        # The keyring lives on the session bus, so this helper needs it and
+        # nothing else: no network, no state directory, no home. It is the
+        # narrowest profile in the file on purpose - it is the one that touches
+        # the API key.
+        bus_environment, bus = validated_bus_environment(environ)
+        cmd += ["--ro-bind", str(bus), str(bus)]
+        for name, value in bus_environment.items():
+            cmd += ["--setenv", name, value]
+    elif kind == "llm":
+        # The one helper that is both networked and bus-connected: it must reach
+        # the provider and the keyring. Everything else stays off the bus, and
+        # this cannot read the notification store. The base URL is a setting and
+        # never comes from notification text; see docs/THREAT_MODEL.md.
+        bus_environment, bus = validated_bus_environment(environ)
+        cmd += ["--ro-bind", str(bus), str(bus)]
+        for name, value in bus_environment.items():
+            cmd += ["--setenv", name, value]
+        cmd += ["--share-net"]
+        for name in ("/etc/resolv.conf", "/etc/ssl/certs", "/etc/ca-certificates"):
+            if Path(name).exists():
+                cmd += ["--ro-bind", name, name]
     return cmd + python_helper(kind, args)
 
 
@@ -183,7 +205,10 @@ def direct_command(kind, args):
 def direct_environment(kind, environ):
     if kind not in HELPER_KINDS:
         raise ValueError("unknown helper")
-    extra = validated_bus_environment(environ)[0] if kind == "kdeconnect" else None
+    # Every helper that speaks to the session bus gets the validated address;
+    # nothing else about the caller's environment survives.
+    extra = validated_bus_environment(environ)[0] if kind in (
+        "kdeconnect", "secret", "llm") else None
     return clean_environment(extra)
 
 

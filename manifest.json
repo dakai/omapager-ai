@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "njpatel.omapager",
   "name": "Omapager",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "author": "Neil Jagdish Patel",
   "license": "MIT",
   "description": "Notifications for Omarchy: a stacking, grouping replacement for the built-in service, with markup parsing, resolved source icons, inline reply, and per-source snooze.",
@@ -57,7 +57,18 @@
       "allowDefaultActionOnCardClick": false,
       "historyHours": 24,
       "clipboardTimeout": 60,
-      "fontScale": 100
+      "fontScale": 100,
+      "swapMouseButtons": false,
+      "sensitiveFilter": "off",
+      "fileManager": "auto",
+      "llmProvider": "off",
+      "llmBaseUrl": "",
+      "llmModel": "",
+      "llmDedupe": true,
+      "llmIntent": true,
+      "alwaysShowRecent": false,
+      "llmDedupeModel": "",
+      "llmDedupeApi": "chat"
     },
     "schema": [
       {
@@ -280,6 +291,109 @@
           60,
           90
         ]
+      },
+      {
+        "key": "swapMouseButtons",
+        "type": "boolean",
+        "label": "Swap mouse buttons on the bar icon",
+        "description": "Make right-click the plain click and left-click open the panel, on the bar indicator only. Cards keep right-click for the source menu.",
+        "defaultValue": false
+      },
+      {
+        "key": "alwaysShowRecent",
+        "type": "boolean",
+        "label": "Always show the latest 5 notifications",
+        "description": "Open the panel and the latest five are already listed, instead of waiting behind the Recent fold-out. The Recent header stops offering to collapse.",
+        "defaultValue": false
+      },
+      {
+        "key": "sensitiveFilter",
+        "type": "enum",
+        "label": "Hide secrets in notification text",
+        "options": [
+          "off",
+          "mask",
+          "redact"
+        ],
+        "defaultValue": "off",
+        "description": "Mask API keys, private keys, tokens, passwords in links, card and account numbers, email addresses and phone numbers. Mask keeps the sentence readable, redact replaces the message. History is always redacted regardless of this setting."
+      },
+      {
+        "key": "fileManager",
+        "type": "enum",
+        "label": "File manager for saved files",
+        "options": [
+          "auto",
+          "nautilus",
+          "dolphin",
+          "thunar",
+          "nemo"
+        ],
+        "defaultValue": "auto",
+        "description": "Which file manager opens a saved file's folder and properties. Auto uses the desktop's registered file manager. Opening the application's own full right-click menu is not possible from a notification surface; this offers Reveal, Properties, Open and Copy path instead."
+      },
+      {
+        "key": "llmProvider",
+        "type": "enum",
+        "label": "Notification model provider",
+        "options": [
+          "off",
+          "ollama",
+          "lmstudio",
+          "llamacpp",
+          "openrouter",
+          "openai",
+          "deepseek",
+          "custom"
+        ],
+        "defaultValue": "off",
+        "description": "An OpenAI-compatible endpoint used to spot duplicates and suggest buttons. Off contacts nothing. The key is kept in the desktop keyring, never in this file."
+      },
+      {
+        "key": "llmBaseUrl",
+        "type": "string",
+        "label": "Custom model endpoint",
+        "defaultValue": "",
+        "description": "Used when the provider is custom. Must end in /v1. Plain http is accepted only for 127.0.0.1 or ::1."
+      },
+      {
+        "key": "llmModel",
+        "type": "string",
+        "label": "Model name",
+        "defaultValue": "",
+        "description": "Empty uses the provider's default model."
+      },
+      {
+        "key": "llmDedupe",
+        "type": "boolean",
+        "label": "Hide duplicated messages",
+        "description": "Show one card when the same message arrives from two sources. Identical text is merged either way; this also merges wording that differs but means the same.",
+        "defaultValue": true
+      },
+      {
+        "key": "llmDedupeModel",
+        "type": "string",
+        "label": "Model for duplicate checks",
+        "defaultValue": "",
+        "description": "Optional. A second, cheaper model used only to decide whether two notifications are the same message. Empty uses the model above. A small or flash model is usually enough: the answer is one boolean."
+      },
+      {
+        "key": "llmDedupeApi",
+        "type": "enum",
+        "label": "How to ask the duplicate question",
+        "options": [
+          "chat",
+          "systemone"
+        ],
+        "defaultValue": "chat",
+        "description": "chat sends both notifications to a chat model and reads the JSON reply. systemone sends one yes/no question to a System One model such as Jev (group/jev at Magpie): it answers with a probability instead of prose, which is faster and cheaper, and nothing has to be parsed."
+      },
+      {
+        "key": "llmIntent",
+        "type": "boolean",
+        "label": "Suggest buttons from the message",
+        "description": "A suggested button must point at text the notification already contains. The model cannot add a link, a path or a command.",
+        "defaultValue": true
       }
     ]
   }

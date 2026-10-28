@@ -92,6 +92,26 @@ BarWidget {
   }
   readonly property bool configuredFetchRemoteIcons: setting("fetchRemoteIcons", true) !== false
   readonly property bool configuredRequireSandbox: setting("requireSandbox", false) === true
+  // The panel's Recent list normally starts collapsed. With this on it starts
+  // expanded and cannot be collapsed, so the latest few are there the moment
+  // the panel opens.
+  readonly property bool configuredAlwaysShowRecent: setting("alwaysShowRecent", false) === true
+
+  // The model layer. "off" is the default and the only state that guarantees
+  // nothing leaves the machine; every other value is a deliberate choice.
+  readonly property string configuredLlmProvider: {
+    var value = String(setting("llmProvider", "off"))
+    return ["ollama", "lmstudio", "llamacpp", "openrouter", "openai",
+            "deepseek", "custom"].indexOf(value) >= 0 ? value : "off"
+  }
+  readonly property string configuredLlmBaseUrl: String(setting("llmBaseUrl", "") || "")
+  readonly property string configuredLlmModel: String(setting("llmModel", "") || "")
+  readonly property string configuredLlmDedupeModel: String(setting("llmDedupeModel", "") || "")
+  readonly property string configuredLlmDedupeApi: String(setting("llmDedupeApi", "chat")) === "systemone"
+    ? "systemone" : "chat"
+  readonly property bool configuredLlmDedupe: setting("llmDedupe", true) !== false
+  readonly property bool configuredLlmIntent: setting("llmIntent", true) !== false
+  readonly property bool llmEnabled: configuredLlmProvider !== "off"
   readonly property int configuredEdgeSpacing: {
     var spacing = Number(setting("edgeSpacing", 12))
     return isFinite(spacing) ? Math.max(0, Math.min(64, Math.round(spacing))) : 12
@@ -184,6 +204,22 @@ BarWidget {
   function applySettings() {
     if (!service) return
     service.requireSandbox = configuredRequireSandbox
+    var filter = String(setting("sensitiveFilter", "off"))
+    service.sensitiveFilter = ["mask", "redact"].indexOf(filter) >= 0 ? filter : "off"
+    var manager = String(setting("fileManager", "auto"))
+    service.fileManager = ["nautilus", "dolphin", "thunar", "nemo"].indexOf(manager) >= 0
+                       ? manager : "auto"
+    // The model layer is inert until a provider is chosen: off is the default,
+    // and an unreachable provider must not slow an arrival down, so the daemon
+    // only learns that it may ask at all.
+    service.llmProvider = configuredLlmProvider
+    service.llmBaseUrl = configuredLlmBaseUrl
+    service.llmModel = configuredLlmModel
+    service.llmDedupeModel = configuredLlmDedupeModel
+    service.llmDedupeApi = configuredLlmDedupeApi
+    service.llmDedupe = configuredLlmDedupe
+    service.llmIntent = configuredLlmIntent
+    service.llmConfigured = llmEnabled
     var stacking = String(setting("stacking", "source"))
     if (stacking === "all" || stacking === "source" && service.stacking !== stacking)
       service.commit(function() { service.stacking = stacking })
@@ -235,10 +271,16 @@ BarWidget {
   readonly property color dim: Qt.darker(panelFg, 1.4)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  // Native semantic roles keep the two quiet states distinct across themes:
-  // urgent for do-not-disturb, accent for a snooze that will end.
-  readonly property color silencedColour: Color.urgent
+  // Two quiet states, told apart by weight rather than alarm. Do Not Disturb is
+  // a deliberate choice, not a failure: grey and slashed reads as "switched
+  // off", where the urgent red read as "something is wrong". A snooze will end
+  // by itself, so it keeps the accent colour and the sleeping bell.
+  readonly property color silencedColour: Color.muted
   readonly property color snoozedColour: Color.accent
+  // The ordinary state, which is the theme's own foreground - white on a dark
+  // theme, and still readable on a light one, which a literal #ffffff would not
+  // be.
+  readonly property color bellColour: Color.foreground
 
   // nf-md-bell-off, the glyph Omarchy's own Dnd indicator uses, so a silenced
   // desktop looks the same whichever service is running; nf-md-bell-sleep, a
@@ -299,6 +341,21 @@ BarWidget {
     settingsView = true
     controller.show()
   }
+
+  // The full preferences window. The panel's own page keeps the settings that
+  // fit in 380 px; anything with a list, a text field or a key goes here, so no
+  // setting has two controls. Declared rather than lazily loaded: it is one
+  // window that is invisible until asked for, and `item` arriving a frame late
+  // made the first open a no-op for no benefit.
+  SettingsWindow {
+    id: preferences
+    pager: pager
+    visible: false
+  }
+
+  function openPreferences() {
+    preferences.visible = true
+  }
   function close() { controller.hide() }
   function toggle() { togglePanel() }
 
@@ -326,8 +383,20 @@ BarWidget {
   // it to start again - so that is the plain click; the panel is where you go
   // to look at something rather than change it, which is what a right-click
   // means everywhere else.
+  //
+  // `swapMouseButtons` turns that around for this bar icon only, for anyone
+  // whose muscle memory puts the panel on the left. Cards keep their own
+  // gestures: right-click there has always meant "this source", and moving it
+  // would take away the only way to snooze one sender without opening the
+  // panel. The swap is expressed as "which button is the primary one", so the
+  // two branches below stay readable.
+  readonly property bool swapMouseButtons: setting("swapMouseButtons", false) === true
+  function isPrimary(buttonCode) {
+    return swapMouseButtons ? buttonCode === Qt.RightButton : buttonCode !== Qt.RightButton
+  }
+
   function pressed(buttonCode) {
-    if (buttonCode === Qt.RightButton) togglePanel()
+    if (!isPrimary(buttonCode)) togglePanel()
     else if (quiet) letEverythingThrough()
     else toggleSilence()
   }
@@ -477,14 +546,13 @@ BarWidget {
       tooltipText: pager.stateLine + ". Right-click for controls."
     }
 
-    // The resting state, which only appears while the bar's inactive
-    // indicators are being revealed. Same glyph and same dimming as Omarchy's
-    // own, so it sits in that row without announcing itself.
+    // The ordinary state: a plain bell, at full strength. It used to be the
+    // slashed glyph at 45%, which read as "off" when notifications were in fact
+    // working normally - the one thing this icon must not say.
     Indicator {
       visible: !pager.hasState && !pager.sharingOfferPending
-      text: pager.bellOff
-      colour: pager.bar ? pager.bar.barForeground : Color.foreground
-      quiet: true
+      text: pager.bell
+      colour: pager.bellColour
       tooltipText: "Enable Do Not Disturb. Right-click for notifications."
     }
   }
@@ -528,13 +596,47 @@ BarWidget {
   property string expandedKey: ""
   property bool recentExpanded: false
   property bool historyExpanded: false
+  // With the setting on, Recent is not a fold-out at all: it is open whenever
+  // the panel is, and its header loses the chevron so nothing suggests it can be
+  // closed. `recentPinned` is the single place that decides this, so the open
+  // handler, the row and the keyboard path cannot disagree.
+  readonly property bool recentPinned: pager.configuredAlwaysShowRecent && !quiet
+  onRecentPinnedChanged: if (recentPinned) recentExpanded = true
+  function toggleRecent() { if (!recentPinned) recentExpanded = !recentExpanded }
+
+  // The same idea as Toast.allDeeds, for a row that no longer has a card.
+  function recentDeeds(row) {
+    if (!row) return []
+    var out = [], codes = String(row.codes || "").split(" ")
+    for (var i = 0; i < codes.length && i < 4; i++) {
+      if (!codes[i]) continue
+      out.push({ kind: "code", value: codes[i],
+                 label: codes.length > 1 ? ("Copy " + codes[i]) : "Copy code" })
+    }
+    if (String(row.link || ""))
+      out.push({ kind: row.meeting ? "meeting" : "link",
+                 label: row.meeting ? "Join" : "Open link", value: String(row.link) })
+    if (String(row.phone || ""))
+      out.push({ kind: "phone", label: "Copy number", value: String(row.phone) })
+    // Snoozing from here is about the source, which is what anyone wants after
+    // reading a message they missed: stop it happening again.
+    if (String(row.groupKey || ""))
+      out.push({ kind: "snooze", label: "Snooze source", value: "60" })
+    out.push({ kind: "forget", label: "Remove", value: "" })
+    return out
+  }
+
+  function takeRecentDeed(row, deed) {
+    if (!row || !deed || !service) return
+    service.recentOffer(String(deed.kind || ""), String(deed.value || ""), String(row.key || ""))
+  }
   onQuietChanged: if (quiet) recentExpanded = false
   property int cursorAt: 0
   property bool cursorLive: false
   property bool globalChoosing: false
   onOpenedChanged: {
     cursorAt = 0; cursorLive = false; expandedKey = ""; globalChoosing = false
-    recentExpanded = false
+    recentExpanded = pager.recentPinned
     historyExpanded = false
     if (!opened) settingsView = false
     // What has been held back, as of now - read on opening rather than kept
@@ -738,6 +840,120 @@ BarWidget {
                 spacing: Style.spacing.controlGap
 
                 Text {
+                  width: parent.width - swapSwitch.width - parent.spacing
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Swap mouse buttons"
+                  textFormat: Text.PlainText
+                  color: pager.panelFg
+                  font.family: pager.fontFamily
+                  font.pixelSize: Style.font.body
+                  wrapMode: Text.WordWrap
+                }
+
+                ToggleSwitch {
+                  id: swapSwitch
+                  anchors.verticalCenter: parent.verticalCenter
+                  checked: pager.swapMouseButtons
+                  foreground: pager.panelFg
+                  onToggled: pager.persistSettings({ swapMouseButtons: !pager.swapMouseButtons })
+                }
+              }
+
+              Text {
+                width: parent.width
+                text: "Right-click silences and left-click opens the panel, on the bar icon."
+                textFormat: Text.PlainText
+                color: Qt.darker(pager.panelFg, 1.4)
+                font.family: pager.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            PanelSeparator { foreground: pager.panelFg }
+
+            Column {
+              width: parent.width
+              spacing: Style.spacing.lg
+
+              Row {
+                width: parent.width
+                spacing: Style.spacing.controlGap
+
+                Text {
+                  width: parent.width - recentSwitch.width - parent.spacing
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Always show the latest 5 notifications"
+                  textFormat: Text.PlainText
+                  color: pager.panelFg
+                  font.family: pager.fontFamily
+                  font.pixelSize: Style.font.body
+                  wrapMode: Text.WordWrap
+                }
+
+                ToggleSwitch {
+                  id: recentSwitch
+                  anchors.verticalCenter: parent.verticalCenter
+                  checked: pager.configuredAlwaysShowRecent
+                  foreground: pager.panelFg
+                  onToggled: pager.persistSettings({ alwaysShowRecent: !pager.configuredAlwaysShowRecent })
+                }
+              }
+
+              Text {
+                width: parent.width
+                text: "Open the panel and the latest five are already listed, instead of waiting behind Recent."
+                textFormat: Text.PlainText
+                color: Qt.darker(pager.panelFg, 1.4)
+                font.family: pager.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            PanelSeparator { foreground: pager.panelFg }
+
+            // The model settings do not fit here, so they live in their own
+            // window. This row is the way in: the cog has to stay the way into
+            // the settings that *do* fit, or those become unreachable.
+            Column {
+              width: parent.width
+              spacing: Style.spacing.lg
+
+              Button {
+                width: parent.width
+                text: "Notification model and API key…"
+                bordered: true
+                foreground: pager.panelFg
+                fontFamily: pager.fontFamily
+                onClicked: {
+                  pager.close()
+                  pager.openPreferences()
+                }
+              }
+
+              Text {
+                width: parent.width
+                text: "Optional. Choose a provider so notifications can be checked for repeats and for buttons worth offering."
+                textFormat: Text.PlainText
+                color: Qt.darker(pager.panelFg, 1.4)
+                font.family: pager.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            PanelSeparator { foreground: pager.panelFg }
+
+            Column {
+              width: parent.width
+              spacing: Style.spacing.lg
+
+              Row {
+                width: parent.width
+                spacing: Style.spacing.controlGap
+
+                Text {
                   width: parent.width - sharingOfferSwitch.width - parent.spacing
                   anchors.verticalCenter: parent.verticalCenter
                   text: "Suggest snooze during screen sharing"
@@ -820,7 +1036,7 @@ BarWidget {
                       : pager.bell
                   color: pager.silenced ? pager.silencedColour
                        : (pager.globalSnoozed || pager.snoozed.length > 0) ? pager.snoozedColour
-                       : pager.panelFg
+                       : pager.bellColour
                   font.family: pager.fontFamily
                   font.pixelSize: hero.iconSize
                 }
@@ -1036,7 +1252,7 @@ BarWidget {
               anchors.top: parent.top
               anchors.bottom: parent.bottom
               cursorShape: Qt.PointingHandCursor
-              onClicked: pager.recentExpanded = !pager.recentExpanded
+              onClicked: pager.toggleRecent()
             }
 
             PanelActionButton {
@@ -1045,12 +1261,13 @@ BarWidget {
               // The scrollbar owns the right-edge hit area even over this row.
               anchors.rightMargin: panelScrollBar.width
               anchors.verticalCenter: parent.verticalCenter
+              visible: !pager.recentPinned
               iconText: pager.recentExpanded ? "\u{f0143}" : "\u{f0140}"
               tooltipText: pager.recentExpanded ? "Hide recent notifications" : "Show recent notifications"
               foreground: pager.panelFg
               fontFamily: pager.fontFamily
               focusable: true
-              onClicked: pager.recentExpanded = !pager.recentExpanded
+              onClicked: pager.toggleRecent()
             }
           }
 
@@ -1129,6 +1346,31 @@ BarWidget {
                     wrapMode: Text.WordWrap
                     maximumLineCount: 2
                     elide: Text.ElideRight
+                  }
+
+                  // What can be done about a notification whose card has gone.
+                  // The same offers the card drew, rebuilt from the row that
+                  // kept them; a value is only shown when it was in the
+                  // original, and the daemon re-checks it before using it.
+                  Row {
+                    width: parent.width
+                    spacing: Style.spacing.controlGap
+                    visible: pager.recentDeeds(recentCard.modelData).length > 0
+
+                    Repeater {
+                      model: pager.recentDeeds(recentCard.modelData)
+
+                      Button {
+                        required property var modelData
+                        text: String(modelData.label)
+                        foreground: pager.panelFg
+                        fontFamily: pager.fontFamily
+                        fontSize: Style.font.caption
+                        horizontalPadding: Style.spacing.controlPaddingX
+                        verticalPadding: Style.spacing.hairline
+                        onClicked: pager.takeRecentDeed(recentCard.modelData, modelData)
+                      }
+                    }
                   }
                 }
               }

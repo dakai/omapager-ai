@@ -99,6 +99,14 @@ Item {
     return out
   }
 
+  // Actions the model suggested, already validated against this row's own text
+  // by the daemon. Appended after the detected offers so the deterministic ones
+  // lead; a suggestion never replaces one.
+  property var llmDeeds: []
+  // Set from the daemon's own setting. With it off - the default - a left click
+  // on the card body does nothing, so a mis-click cannot lose a notification.
+  property bool activateOnClick: false
+
   readonly property var allDeeds: {
     var out = []
     for (var c = 0; c < foundCodes.length; c++)
@@ -109,6 +117,11 @@ Item {
                  label: row.meeting ? "Join" : "Open link", value: String(row.link) })
     if (String(row.phone || ""))
       out.push({ kind: "phone", label: "Copy number", value: String(row.phone) })
+    // A saved file gets one button, not four: the menu behind it holds the
+    // verbs. `filePath` is only set when the sender's text named a path; the
+    // activation helper checks it exists before anything opens.
+    if (String(row.filePath || ""))
+      out.push({ kind: "file", label: "File", value: String(row.filePath) })
     if (String(row.replyPath || ""))
       out.push({ kind: "reply", label: "Reply", value: "" })
     for (var i = 0; i < actions.length; i++) {
@@ -118,6 +131,9 @@ Item {
         continue
       out.push({ kind: "action", label: String(actions[i].text || ""), value: String(actions[i].id) })
     }
+    // The model's suggestions last: they are the least certain, and the ones
+    // most likely to be folded into "More".
+    for (var j = 0; j < llmDeeds.length; j++) out.push(llmDeeds[j])
     return out
   }
 
@@ -187,6 +203,19 @@ Item {
   }
   property bool deedsOpen: false
   property bool menuOpen: false
+  // The file menu's own verb list. Kept separate from the snooze menu: a file
+  // card's "File" button replaces it with these four, and its header row is the
+  // only way back, so opening the wrong one does not lose the other.
+  property bool fileMenuOpen: false
+  readonly property var fileDeeds: {
+    if (!String(row.filePath || "")) return []
+    return [
+      { kind: "file-reveal", label: "Reveal in Files", value: String(row.filePath) },
+      { kind: "file-properties", label: "Properties", value: String(row.filePath) },
+      { kind: "file-open", label: "Open", value: String(row.filePath) },
+      { kind: "file-copy", label: "Copy path", value: String(row.filePath) }
+    ]
+  }
   property string actionsAlign: "right"      // right | left
 
   // Right-clicking a card asks about the source rather than about the message:
@@ -197,6 +226,8 @@ Item {
 
   readonly property var menuDeeds: {
     var out = []
+    // Snoozing a file notification is what the menu is for; anything about the
+    // file itself lives behind the card's own File button.
     for (var i = 0; i < snoozeOptions.length; i++)
       out.push({ kind: "snooze", label: String(snoozeOptions[i].menuLabel),
                  value: Number(snoozeOptions[i].seconds) })
@@ -215,14 +246,26 @@ Item {
   function doDeed(deed) {
     var kind = String(deed.kind || "")
     if (kind === "more") { deedsOpen = !deedsOpen; return }
+    if (kind === "file") { fileMenuOpen = !fileMenuOpen; return }
     if (kind === "snooze") { menuOpen = false; snoozeRequested(Number(deed.value)); return }
     if (kind === "silence") { menuOpen = false; silenceRequested(); return }
     if (kind === "reply") { menuOpen = false; replyRequested(); return }
     if (kind === "action") { actionInvoked(String(deed.value)); return }
+    if (kind === "file-copy") { fileAction("copy", String(deed.value)); return }
+    if (kind.indexOf("file-") === 0) {
+      fileMenuOpen = false
+      fileAction(kind.slice(5), String(deed.value))
+      return
+    }
     offerTaken(kind, String(deed.value))
     takenKind = kind + ":" + String(deed.value)
     tick.restart()
   }
+
+  // A file verb is a request to the daemon, not something the card can do: the
+  // path has to be checked against the filesystem again at the moment it is
+  // used, and only the helper gets to touch it.
+  signal fileAction(string verb, string path)
 
   signal offerTaken(string kind, string value)
 
@@ -252,6 +295,9 @@ Item {
   property real remaining: Number(row.duration || 0)
   readonly property bool ticking: Number(row.duration || 0) > 0 && !paused && !replying
   onRowChanged: remaining = Number(row.duration || 0)
+  // Pinned is the daemon saying "this one is among the newest you asked to
+  // keep". It stops the clock without touching the duration, so unpinning
+  // resumes the time that was left rather than restarting the countdown.
 
   Timer {
     interval: 100
@@ -297,8 +343,8 @@ Item {
   // And the height the scene says it is right now, on the way there.
   property real drawnHeight: targetHeight
 
-  onHoveredChanged: if (!hovered) menuOpen = false
-  onExpandedChanged: if (!expanded) menuOpen = false
+  onHoveredChanged: if (!hovered) { menuOpen = false; fileMenuOpen = false }
+  onExpandedChanged: if (!expanded) { menuOpen = false; fileMenuOpen = false }
 
   // Position, size and opacity all come from the scene. The card owns none of
   // them and animates none of them: it is told where it is, every frame, by
@@ -713,12 +759,14 @@ Item {
           // collapsed deck is a peek of an edge, and buttons appearing inside
           // one would be clipped to nothing.
           readonly property string mode: card.replying ? "reply"
+                                       : card.fileMenuOpen ? "file"
                                        : card.menuOpen ? "menu"
                                        : card.deedsOpen ? "list"
                                        : (card.hovered && card.expanded
                                           && card.allDeeds.length > 0) ? "row" : ""
 
           readonly property real contentHeight: mode === "reply" ? replyBox.height
+                                              : mode === "file" ? fileColumn.implicitHeight
                                               : mode === "menu" ? menuColumn.implicitHeight
                                               : mode === "list" ? deedColumn.implicitHeight
                                               : mode === "row" ? deedRow.implicitHeight : 0
@@ -858,6 +906,29 @@ Item {
             }
           }
 
+          // The file menu: what the desktop's own right-click menu is used for
+          // on a file somebody was just told about. Drawn in the card for the
+          // same reason the other lists are.
+          Column {
+            id: fileColumn
+            anchors.bottom: parent.bottom
+            width: parent.width
+            spacing: Style.space(4)
+            opacity: deedArea.mode === "file" ? 1 : 0
+            visible: opacity > 0.01
+            Behavior on opacity { NumberAnimation { duration: card.fade } }
+
+            Repeater {
+              model: card.fileMenuOpen ? card.fileDeeds : []
+              DeedButton {
+                required property var modelData
+                deed: modelData
+                toast: card
+                wide: true
+              }
+            }
+          }
+
           // Right-click: what to do about this sender, rather than about this
           // message. Drawn in the card rather than as a popup for the same
           // reason "More" is - the notification surface is clipped, and a menu
@@ -925,8 +996,13 @@ Item {
         // of it rather than a way into the app - the surface takes no keyboard
         // focus while it is open, so Escape never reaches us.
         if (card.menuOpen) { card.menuOpen = false; return }
-        if (mouse.button === Qt.MiddleButton) card.dismissed()
-        else card.activated()
+        // Middle-click dismisses. A left-click does nothing at all unless the
+        // sender's default action was explicitly opted into: cards are read and
+        // mis-clicked constantly, and losing a notification to a stray click is
+        // worse than having to press the close button. The offers and the
+        // sender's actions are all buttons, and those still work.
+        if (mouse.button === Qt.MiddleButton) { card.dismissed(); return }
+        if (card.activateOnClick) card.activated()
       }
     }
   }

@@ -28,13 +28,19 @@ We won’t knowingly merge a broken or unsafe intermediate version. Required che
 | `Service.qml` | the daemon: owns the bus, the model, snooze/silence state, routing, the surface |
 | `Toast.qml` | one card, in every state it has |
 | `Widget.qml` | the bar indicator and its panel; **also where settings live** |
+| `SettingsWindow.qml` | the full preferences window: everything that does not fit in 380 px |
 | `DeedButton.qml` | one action on a card |
 | `Layout.js` | pure: rows in, placements out. No compositor needed to reason about it |
-| `Detect.js` `Markup.js` `Store.js` | pure: what a body is offering, what is safe to render, what to keep |
-| `bin/omapager-*` | Python helpers: store, icon resolution, KDE Connect bridge, demo |
+| `Detect.js` `Markup.js` `Store.js` `Redact.js` | pure: what a body is offering, what is safe to render, what to keep, what must be hidden |
+| `bin/omapager-*` | Python helpers: store, icon resolution, KDE Connect bridge, secret keyring, model client, demo |
 
 Settings only reach a **bar widget**, never a service — so `Widget.applySettings()`
 reads `shell.json` and pushes values onto the daemon. That is the only path.
+
+The preferences window is a second reader of the same entry, through the widget:
+it calls `pager.persistSettings()` and never writes `shell.json` itself. The API
+key is the one setting that is not in `shell.json`; it goes to the keyring via
+`bin/omapager-secret`, and the window only ever learns whether one is stored.
 
 ## Running and testing
 

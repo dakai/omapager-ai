@@ -117,7 +117,7 @@ class PinnedHTTPConnection(http.client.HTTPConnection):
             raise last_error
         raise OSError('no validated DNS answer')
 
-def fetch_once(url, limit, deadline=None):
+def fetch_once(url, limit, deadline=None, headers=None, method="GET", body=None):
     if type(limit) is not int or not 0 < limit <= MAX_RESPONSE_BYTES:
         raise ValueError('invalid response limit')
     p, host, port = parse_url(url)
@@ -125,9 +125,18 @@ def fetch_once(url, limit, deadline=None):
     answers = resolve_public_answers(host, port)
     conn = PinnedHTTPConnection(host, port, answers, deadline)
     try:
-        conn.request('GET', urlunsplit(('', '', p.path or '/', p.query, '')),
-                     headers={'Host': host, 'User-Agent': 'omapager-hardened/0.1',
-                              'Accept-Encoding': 'identity', 'Connection': 'close'})
+        sent = {'Host': host, 'User-Agent': 'omapager-hardened/0.1',
+                'Accept-Encoding': 'identity', 'Connection': 'close'}
+        # Caller headers may add Authorization or Accept, but never a Host or a
+        # transport-level override: the pinned connection is the whole point.
+        if headers:
+            for name, value in headers.items():
+                if name.lower() in ('host', 'accept-encoding', 'connection'):
+                    continue
+                if isinstance(name, str) and isinstance(value, str):
+                    sent[name] = value
+        conn.request(method, urlunsplit(('', '', p.path or '/', p.query, '')),
+                     body=body, headers=sent)
         stream_socket = conn.sock
         if stream_socket is not None:
             stream_socket.settimeout(conn.remaining())
@@ -186,3 +195,29 @@ def fetch(url, limit=512*1024):
         # credentials, numeric/local names, or a forbidden port.
         parse_url(url)
     raise ValueError('redirect limit')
+
+
+def request(url, method, limit=512*1024, headers=None, body=None, timeout=None):
+    """One exchange, no redirects followed.
+
+    A redirect from an API endpoint is not a normal answer, and following one
+    would carry the Authorization header to a host the caller never chose. The
+    caller gets the 3xx as an error instead.
+
+    `timeout` is seconds. It used to be named `deadline` and treated as an
+    absolute value, which meant a caller passing 12 was handing over a moment
+    in 1970 - every request then failed instantly, reporting only "deadline".
+    """
+    if type(limit) is not int or not 0 < limit <= MAX_RESPONSE_BYTES:
+        raise ValueError('invalid response limit')
+    if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
+        raise ValueError('invalid timeout')
+    deadline = time.monotonic() + (timeout if timeout is not None else REQUEST_DEADLINE)
+    data, location = fetch_once(url, limit, deadline, headers, method, body)
+    if location is not None:
+        raise ValueError('redirect refused')
+    return data
+
+
+def post(url, body, headers=None, limit=512*1024, timeout=None):
+    return request(url, 'POST', limit, headers, body, timeout)

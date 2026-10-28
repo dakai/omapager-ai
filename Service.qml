@@ -27,6 +27,9 @@ Item {
 
   // Injected by omarchy-shell's service loader.
   property var shell: null
+  // Set once, when this object is created. The probe can then tell a reloaded
+  // service from a stale reading, which matters when saving a setting.
+  readonly property double instanceStamp: Date.now()
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string storeBin: Qt.resolvedUrl("bin/omapager-run-store").toString().replace(/^file:\/\//, "")
@@ -96,6 +99,28 @@ Item {
   // stacking above.
   property real fontScale: 1
   property string actionsAlign: "right"  // right | left
+  // What a card may show of a credential: "off", "mask" or "redact". The disk
+  // copy redacts regardless; this only decides how the screen reads.
+  property string sensitiveFilter: "off"
+  // Which file manager offers Reveal/Properties for a saved file. "auto" means
+  // the desktop's registered one via org.freedesktop.FileManager1.
+  property string fileManager: "auto"
+  // Set from the widget's settings; the LLM layer is inert until a key exists.
+  property bool llmConfigured: false
+  property string llmProvider: "off"
+  property string llmBaseUrl: ""
+  property string llmModel: ""
+  // A second model for the duplicate question alone. Empty means "the same one
+  // as everything else"; set, it is used only when a comparison card is sent,
+  // so a small cheap model can carry the high-volume yes/no while the larger
+  // one handles the rarer button suggestions.
+  property string llmDedupeModel: ""
+  // "chat" reads a JSON reply from a chat model; "systemone" asks a System One
+  // model (Jev) one yes/no question and gets a probability back. The second is
+  // the cheap path: no generation, no parsing, one float.
+  property string llmDedupeApi: "chat"
+  property bool llmDedupe: false
+  property bool llmIntent: false
 
   // Chrome puts a "Settings" action on every web notification, which opens
   // its site-permissions page. It is the same button on every card, it is
@@ -485,6 +510,59 @@ Item {
                   codesBypassQuiet: codesBypassQuiet })
   }
 
+  // --------------------------------- duplicate suppression
+  //
+  // The same message often arrives twice: once from the app and once from a
+  // mail or chat bridge. Stage one is local and free - the words, lowercased,
+  // with URLs and punctuation removed - so it runs on every notification and
+  // never delays one. Stage two asks the configured model about pairs that
+  // already look similar, and only closes the older card if it agrees.
+  //
+  // Neither stage is allowed to swallow a Critical notification, and neither
+  // can suppress the second copy of something that was a replacement: that is
+  // the sender updating its own card, not a second sender saying it again.
+  // `llmDedupe` itself is the settings property declared above; this section
+  // only holds the bookkeeping.
+  readonly property int dedupeWindowSeconds: 120
+  property var recentDedupe: []        // [{key, text, groupKey, ts}], newest last
+
+  function pruneDedupe(now) {
+    var horizon = now - dedupeWindowSeconds
+    var kept = []
+    for (var i = 0; i < recentDedupe.length; i++)
+      if (recentDedupe[i].ts >= horizon) kept.push(recentDedupe[i])
+    if (kept.length !== recentDedupe.length) recentDedupe = kept
+  }
+
+  // The live card this one duplicates, or "". Same words from a *different*
+  // source only: two messages from one app are that app talking twice.
+  function duplicateOf(row) {
+    var text = Markup.dedupeKey(row)
+    if (!text) return ""
+    var now = Date.now() / 1000
+    pruneDedupe(now)
+    var group = String(row.groupKey || "")
+    for (var i = recentDedupe.length - 1; i >= 0; i--) {
+      var entry = recentDedupe[i]
+      if (entry.text !== text || entry.groupKey === group) continue
+      if (rowIndexFor(entry.key) < 0) continue        // it has gone; say it again
+      return entry.key
+    }
+    return ""
+  }
+
+  function noteDedupe(row) {
+    var text = Markup.dedupeKey(row)
+    if (!text) return
+    var kept = []
+    for (var i = 0; i < recentDedupe.length; i++)
+      if (recentDedupe[i].key !== row.key) kept.push(recentDedupe[i])
+    kept.push({ key: String(row.key), text: text,
+                groupKey: String(row.groupKey || ""), ts: Date.now() / 1000 })
+    // Bounded: the window already limits age, this limits a burst.
+    recentDedupe = kept.slice(-64)
+  }
+
   // A small session-only reading stack for notifications that were not quietened.
   // Keep text snapshots, never the live Notification objects or their actions.
   property var recentRows: []
@@ -496,13 +574,25 @@ Item {
       // Keep source matching separate from the redacted display text. A digest
       // avoids retaining a sender-supplied code in a raw source/group label.
       var sourceKey = Qt.md5(String(row.groupKey || ""))
-      row = Store.sanitiseForPersistence(row)
+      // The text is redacted exactly as it is for history, because Recent is a
+      // reading list and a code in it would be a code sitting in memory after
+      // its card is gone. The *offers* are kept separately: they are the
+      // actionable values, they were already in memory while the card was live,
+      // and without them the five recent notifications are something to look at
+      // and nothing to do anything with. Nothing here is written to disk.
+      var offers = Store.sanitiseForPersistence(row)
       rows.push({
         key: key, sourceKey: sourceKey,
-        source: String(row.source || row.app || "Notification").slice(0, 120),
-        summary: String(row.summary || "").slice(0, 240),
-        bodyLine: String(row.bodyLine || "").slice(0, 1000),
-        ts: Number(row.ts)
+        source: String(offers.source || offers.app || "Notification").slice(0, 120),
+        summary: String(offers.summary || "").slice(0, 240),
+        bodyLine: String(offers.bodyLine || "").slice(0, 1000),
+        ts: Number(row.ts),
+        codes: String(row.codes || row.code || ""),
+        link: String(row.link || ""),
+        meeting: row.meeting === true,
+        phone: String(row.phone || ""),
+        groupKey: String(row.groupKey || ""),
+        urgency: Number(row.urgency || 1)
       })
     }
     // A replacement may change to a snoozed source: remove its old entry even
@@ -511,6 +601,43 @@ Item {
       if (recentRows[i].key !== key) rows.push(recentRows[i])
     }
     recentRows = rows
+  }
+
+  // Acting on a recent row. The card is gone by definition - that is what
+  // "recent" means - so the value is re-checked against the stored row rather
+  // than against a live model, and only then used. Same rule as takeOffer: a
+  // button may only carry a value the notification actually contained.
+  function recentOffer(kind, value, key) {
+    var wanted = String(key || ""), row = null
+    for (var i = 0; i < recentRows.length; i++)
+      if (String(recentRows[i].key) === wanted) { row = recentRows[i]; break }
+    if (!row) return false
+    var offered = String(value || "")
+    if (kind === "code") {
+      if (!/^[ A-Za-z0-9_-]{1,64}$/.test(offered)) return false
+      if (String(row.codes || "").split(" ").indexOf(offered) < 0) return false
+      copyText(offered, true)
+      return true
+    }
+    if (kind === "phone") {
+      if (offered !== String(row.phone || "")) return false
+      copyText(offered, false)
+      return true
+    }
+    if (kind === "link" || kind === "meeting") {
+      if (offered !== String(row.link || "")) return false
+      return Security.openExternalUrl(offered)
+    }
+    if (kind === "snooze") {
+      if (!row.groupKey) return false
+      snoozeSource(row.groupKey, row.source, Number(value) || 0, true)
+      return true
+    }
+    if (kind === "forget") {
+      recentRows = recentRows.filter(function (entry) { return String(entry.key) !== wanted })
+      return true
+    }
+    return false
   }
 
   function recentForPanel(limit) {
@@ -695,6 +822,235 @@ Item {
     held = held.filter(function(heldKey) { return heldKey !== key })
   }
 
+  // ------------------------------------------------------------- model layer
+  //
+  // One advisory question per notification, at most one in flight, and never on
+  // the path that puts a card on screen. The card is drawn first; if the model
+  // comes back with a button the row already supports, or says the message is a
+  // repeat of one still on screen, that is applied afterwards through the same
+  // commit/mutate path everything else uses.
+  //
+  // Everything here fails open. A model that is down, slow, or talking nonsense
+  // costs the user nothing but the feature.
+  readonly property string llmBin: Qt.resolvedUrl("bin/omapager-run-llm").toString().replace(/^file:\/\//, "")
+  readonly property int llmQueueLimit: 8
+  // A guard, not a budget. The card is already on screen by the time the model
+  // is asked, so waiting costs nothing the user can see; aborting early only
+  // threw the answer away. This exists to clear a helper that never exits, and
+  // sits above the helper's own 12 s deadline for exactly that reason.
+  readonly property int llmGuardMillis: 20000
+  property var llmQueue: []
+  property string llmBusyKey: ""
+  property var llmAnswers: ({})       // key -> { duplicate, buttons }
+  // The last answer, verbatim enough to tell "no answer" from "answered no".
+  property var llmLast: ({})
+  property int llmRevision: 0
+
+  function llmAvailable() {
+    return llmConfigured && helperSettingsReady && llmProvider !== "off"
+  }
+
+  // The text the model is allowed to see: already through the display filter,
+  // so a request can never carry a credential the screen was told to hide.
+  function llmAsk(row) {
+    if (!llmAvailable()) return
+    var key = String(row.key || "")
+    if (!key) return
+    llmQueue = llmQueue.filter(function (job) { return job.key !== key })
+    if (llmQueue.length >= llmQueueLimit) return
+    llmQueue.push({ key: key, summary: String(row.summary || ""),
+                    body: String(row.body || row.bodyLine || ""),
+                    groupKey: String(row.groupKey || ""),
+                    other: closestLiveRow(row) })
+    pumpLlm()
+  }
+
+  // The one card worth comparing the new arrival against, or null.
+  //
+  // Without this the model was asked "is this the same message another source
+  // already showed?" while being shown only the new message - so it answered
+  // "no" every time, and the duplicate stage could never fire. The bar is low
+  // because the answer is verified again before a card is closed; sending the
+  // closest candidate only saves the model from guessing about text it cannot
+  // see.
+  readonly property real llmContextSimilarity: 0.35
+
+  function closestLiveRow(row) {
+    var text = String(Markup.dedupeKey(row))
+    if (!text) return null
+    var best = null, bestScore = llmContextSimilarity
+    for (var i = 0; i < toasts.count; i++) {
+      var other = toasts.get(i)
+      if (String(other.key) === String(row.key)) continue
+      if (String(other.groupKey) === String(row.groupKey)) continue
+      if (leaving[String(other.key)]) continue
+      var score = Markup.similarity(text, String(Markup.dedupeKey(other)))
+      if (score > bestScore) { bestScore = score; best = other }
+    }
+    if (!best) return null
+    return { summary: String(best.summary || ""),
+             body: String(best.body || best.bodyLine || "") }
+  }
+
+  function pumpLlm() {
+    if (!llmAvailable() || llmProc.running) return
+    var job = llmQueue.shift()
+    if (!job) return
+    if (!liveKeys[job.key]) { pumpLlm(); return }
+    llmBusyKey = job.key
+    llmProc.job = job
+    llmProc.input = JSON.stringify({ summary: job.summary, body: job.body,
+                                     other: job.other || null })
+    // The duplicate question can be routed to its own model and its own API.
+    // Without a comparison card there is only the button question, which stays
+    // on the chat model.
+    var judge = !!job.other && llmDedupeApi === "systemone"
+    var model = job.other ? (llmDedupeModel || llmModel) : llmModel
+    llmProc.command = [llmBin, judge ? "judge" : "ask", llmProvider,
+                       llmBaseUrl || "", model || ""]
+    llmProc.stdinEnabled = true
+    llmProc.running = true
+  }
+
+  Process {
+    id: llmProc
+    environment: service.helperEnvironment
+    property var job: null
+    property string input: ""
+    running: false
+    // The payload has to be followed by EOF: the helper reads stdin to the end
+    // before it does anything. Leaving the pipe open blocked every request until
+    // the wrapper's watchdog killed it, so no answer ever came back.
+    onRunningChanged: if (running) {
+      if (input) write(input)
+      input = ""
+      stdinEnabled = false
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var job = llmProc.job
+        if (job) service.acceptLlmAnswer(job, String(text || ""))
+      }
+    }
+    onExited: { service.pumpLlm() }
+  }
+
+  Timer {
+    id: llmGuard
+    interval: service.llmGuardMillis
+    onTriggered: {
+      if (!llmProc.running) return
+      // Only a stuck helper reaches this. Kill it and let the next one run;
+      // nothing that already arrived is discarded.
+      llmProc.running = false
+      llmProc.job = null
+      service.llmBusyKey = ""
+      service.pumpLlm()
+    }
+  }
+
+  onLlmBusyKeyChanged: if (llmBusyKey !== "") llmGuard.restart()
+
+  // The answer, reduced to what this row can actually do.
+  //
+  // A suggestion is accepted only when its value appears verbatim in the text
+  // the card is already showing, and then only if it re-validates as the kind
+  // it claims to be. That pair of checks is what makes a prompt injected
+  // through a message body harmless: the model can point at something the
+  // notification said, and can never add a capability the notification did not
+  // already contain. `reply` and `action` are dropped outright - they belong to
+  // the sender's own action list, which the model cannot see or extend.
+  function acceptLlmAnswer(job, text) {
+    llmBusyKey = ""
+    var answer = null
+    try { answer = JSON.parse(text) } catch (e) { answer = null }
+    var index = job ? rowIndexFor(job.key) : -1
+    llmLast = { key: job ? job.key : "", parsed: !!answer, index: index,
+                model: job && job.other ? (llmDedupeModel || llmModel) : llmModel,
+                duplicate: answer ? answer.duplicate === true : false,
+                buttons: answer ? (answer.buttons || []).length : 0,
+                hadOther: !!(job && job.other), at: Date.now() }
+    if (!answer || index < 0) { pumpLlm(); return }
+    var row = toasts.get(index)
+
+    if (llmDedupe && answer.duplicate === true && similarLiveRow(row) !== "") {
+      closeToast(job.key, "duplicate")
+      pumpLlm()
+      return
+    }
+
+    if (llmIntent) {
+      var text_ = String(row.summary || "") + "\n" + String(row.body || row.bodyLine || "")
+      var offered = []
+      var buttons = answer.buttons || []
+      for (var i = 0; i < buttons.length && offered.length < 4; i++) {
+        var suggestion = llmSuggestion(row, buttons[i], text_)
+        if (suggestion) offered.push(suggestion)
+      }
+      if (offered.length) { llmAnswers[job.key] = offered; llmRevision += 1 }
+    }
+    pumpLlm()
+  }
+
+  // One suggestion, or null. The value must be quoted from the row's own text
+  // and must survive the same validators the detected offers go through.
+  function llmSuggestion(row, want, text) {
+    if (!want || typeof want.value !== "string") return null
+    var value = want.value
+    if (!value || value.length > 2048 || text.indexOf(value) < 0) return null
+    if (String(row.codes || "").split(" ").indexOf(value) >= 0) return null
+    if (String(row.link || "") === value || String(row.phone || "") === value) return null
+    if (String(row.filePath || "") === value) return null
+    switch (want.kind) {
+    case "link":
+      var url = Security.safeHttpUrl(value)
+      if (!url) return null
+      return { kind: row.meeting ? "meeting" : "link", label: "Open link", value: url }
+    case "code":
+      if (!/^[A-Za-z0-9-]{4,32}$/.test(value)) return null
+      return { kind: "code", label: "Copy " + value, value: value }
+    case "phone":
+      if (!/^[+0-9][0-9 ().-]{6,30}$/.test(value)) return null
+      return { kind: "phone", label: "Copy number", value: value }
+    case "file":
+      if (!Security.safeLocalFilePath(value)) return null
+      return { kind: "file", label: "File", value: value }
+    }
+    return null
+  }
+
+  function llmDeeds(key) {
+    if (!llmIntent) return []
+    var answer = llmAnswers[String(key || "")]
+    return answer ? answer : []
+  }
+
+  // How alike two messages have to be before the model's "duplicate" verdict is
+  // allowed to close a card. The local stage has already failed at this point
+  // by definition - it only runs when the words differ - so this compares word
+  // overlap rather than requiring an exact key. 0.6 is the point where the same
+  // sentence with a different prefix still matches and a different build number
+  // does not.
+  readonly property real duplicateSimilarity: 0.6
+
+  // The live card this row repeats from another source, or "". Asked only when
+  // the model has already said the two are the same message, and answered from
+  // the model's side only when a different source's card is still on screen and
+  // reads like this one.
+  function similarLiveRow(row) {
+    var text = String(Markup.dedupeKey(row))
+    if (!text) return ""
+    for (var i = 0; i < toasts.count; i++) {
+      var other = toasts.get(i)
+      if (String(other.key) === String(row.key)) continue
+      if (String(other.groupKey) === String(row.groupKey)) continue
+      if (Markup.similarity(text, String(Markup.dedupeKey(other))) >= duplicateSimilarity)
+        return String(other.key)
+    }
+    return ""
+  }
+
   // ------------------------------------------------------------- icons
   //
   // Resolved once per source and remembered, so a chatty Slack does not spawn
@@ -777,8 +1133,13 @@ Item {
       if (String(row.groupKey || row.source || row.app || "") !== key) continue
       if (row.stored_image === path) continue
       toasts.setProperty(i, "stored_image", path)
+      // Persist the unfiltered row when we still have it: the store redacts
+      // for itself, and writing the display copy would replace real text with
+      // its masked form in history.
+      var reservation = liveKeys[String(row.key)]
+      var base = reservation && reservation.storedRow ? reservation.storedRow : row
       var copy = {}
-      for (var k in row) copy[k] = row[k]
+      for (var k in base) copy[k] = base[k]
       copy.stored_image = path
       Store.write(storeProc, storeBin, "put", copy)
     }
@@ -1171,7 +1532,18 @@ Item {
 
     var row = Store.snapshot(notification, key, NotificationUrgency)
     row.duration = durationFor(notification.urgency, row.expireTimeout)
-    rememberRecent(row)
+    // Two rows from one snapshot. `row` is the truth: it is what the store
+    // receives and what deduplication compares, because the Python store does
+    // its own redaction on write and a masked body would make two different
+    // messages look identical. `display` is what the card is allowed to draw.
+    // Applying the display filter before the write put "•••••• (EMAIL)" into
+    // history, which was wrong in the one direction that matters.
+    var display = Store.filterSensitive(row, sensitiveFilter)
+    rememberRecent(display)
+    // The icon pump writes a row back to the store when it resolves. Give it
+    // the unfiltered one, or the write would replace the stored text with the
+    // masked version.
+    if (liveKeys[key]) liveKeys[key].storedRow = row
 
     var previous = refs[key]
     refs[key] = notification
@@ -1200,9 +1572,30 @@ Item {
     }
 
     Store.write(storeProc, storeBin, "put", row)
+
+    // A duplicate of something already on screen from another source. The copy is
+    // still recorded - history is a log of what arrived, not of what was worth
+    // showing - but it does not take a card of its own. Critical messages are
+    // exempt: two urgent alerts saying the same thing is still two alerts.
+    if (notification.urgency !== NotificationUrgency.Critical
+        && rowIndexFor(key) < 0) {
+      var original = duplicateOf(row)
+      if (original) {
+        Store.write(storeProc, storeBin, "close", null, [key, "duplicate"])
+        release(key)
+        if (rowIndexFor(key) < 0) releaseLive(key)
+        else liveKeys[key].row = null
+        return
+      }
+    }
+    noteDedupe(row)
+
     wantSenderImage(row)
     wantIcon(row)
     lookForReply(row)
+    // The model is asked after the card is queued, never before: an arrival
+    // that waits for a network round trip is an arrival that arrives late.
+    if (notification.urgency !== NotificationUrgency.Critical) llmAsk(row)
 
     // An update to something already on screen goes through either way: it
     // changes a card in place rather than moving anything. Only a genuinely
@@ -1210,7 +1603,7 @@ Item {
     // its reservation the whole time it sits there, unshown.
     if (service.holding() && service.rowIndexFor(key) < 0) {
       var pending = liveKeys[key]
-      pending.row = row
+      pending.row = display
       if (!pending.held) {
         pending.held = true
         service.held = service.held.concat([key])
@@ -1218,7 +1611,7 @@ Item {
       return
     }
 
-    service.showRow(row)
+    service.showRow(display)
   }
 
   function watchNotification(notification, key) {
@@ -1798,6 +2191,32 @@ Item {
   // also cleared once it has had time to be used, the way a phone does it.
   property string secretHeld: ""
 
+  // A file verb from a card: reveal, properties, open, or copy the path.
+  //
+  // The path is checked here against the row that is actually on screen - a
+  // card cannot ask for a file it is not carrying - and the helper checks it
+  // again against the filesystem at the moment of use. Copying is done in QML
+  // because it needs no capability; the other three go through the broker.
+  function takeFileAction(verb, path, key) {
+    var index = rowIndexFor(String(key || ""))
+    if (index < 0) return
+    var row = toasts.get(index)
+    var wanted = String(path || "")
+    if (!wanted || wanted !== String(row.filePath || "")) return
+    if (verb === "copy") { copyText(wanted, false); return }
+    if (verb !== "reveal" && verb !== "properties" && verb !== "open") return
+    var manager = String(fileManager || "auto")
+    fileProc.running = false
+    fileProc.command = ["/usr/bin/python3", "-I", actionBin, "fm", verb, wanted, manager]
+    fileProc.running = true
+  }
+
+  Process {
+    id: fileProc
+    running: false
+    environment: ({})
+  }
+
   function copyText(text, sensitive) {
     var value = String(text || "")
     if (!value || value.length > (sensitive ? 64 : 4096)) return
@@ -1856,6 +2275,8 @@ Item {
 
   function takeOffer(kind, value, key) {
     if (kind === "code") {
+      // Only a code this row actually carries. A button may not act on a value
+      // the notification did not contain, even though the button is ours.
       var index = rowIndexFor(String(key || ""))
       if (index < 0 || String(toasts.get(index).codes).split(" ").indexOf(String(value)) < 0) return
       copyText(value, true)
@@ -1917,7 +2338,13 @@ Item {
       if (!reserveLive(row.key)) break
       // Live image handles died with the old shell; restore a durable icon.
       if (!replay) wantIcon(row)
-      showRow(row)
+      // A restored card is still on screen, so it belongs in Recent as well.
+      // Saving a setting reloads the shell config and the daemon is rebuilt,
+      // which used to empty `recentRows` while the cards themselves came back -
+      // the panel then said "no recent notifications" next to a full deck.
+      var display = Store.filterSensitive(row, sensitiveFilter)
+      rememberRecent(display)
+      showRow(display)
     }
   }
 
@@ -2008,6 +2435,15 @@ Item {
         hasWlCopy: service.hasWlCopy, security: service.sandboxStatus,
         fetchRemoteIcons: service.fetchIcons,
         allowDefaultActionOnCardClick: service.allowDefaultActionOnCardClick,
+        sensitiveFilter: service.sensitiveFilter, fileManager: service.fileManager,
+        instanceStamp: service.instanceStamp, recentRows: service.recentRows.length,
+        llmLast: service.llmLast,
+        llmDedupeModel: service.llmDedupeModel, llmDedupeApi: service.llmDedupeApi,
+        modelState: { queue: service.llmQueue.length, busy: service.llmBusyKey,
+                      answers: Object.keys(service.llmAnswers).length,
+                      available: service.llmAvailable() },
+        model: { provider: service.llmProvider, configured: service.llmConfigured,
+                 dedupe: service.llmDedupe, intent: service.llmIntent },
         sharingActive: service.sharingActive, sharingStreams: service.sharingStreams,
         sharingOfferPending: service.sharingOfferPending, offerSnoozeWhenSharing: service.offerSnoozeWhenSharing,
         globalSnoozeUntil: service.globalSnoozeUntil,
@@ -2457,6 +2893,8 @@ Item {
             fontScale: service.fontScale
             showCountdown: service.showCountdown
             actionsAlign: service.actionsAlign
+            activateOnClick: service.allowDefaultActionOnCardClick
+            llmDeeds: { service.llmRevision; return service.llmDeeds(model.key) }
             replyError: service.replyingKey === model.key ? service.replyError : ""
             replying: service.replyingKey === model.key
             onReplyRequested: {
@@ -2471,6 +2909,7 @@ Item {
             hoverY: service.hoverY
             onActionInvoked: function(identifier) { service.invokeAction(model.key, identifier) }
             onOfferTaken: function(kind, value) { service.takeOffer(kind, value, model.key) }
+            onFileAction: function(verb, path) { service.takeFileAction(verb, path, model.key) }
             now: service.nowTick
             expanded: service.expanded
                       && (service.stacking !== "source" || service.openDeck === Layout.deckKeyFor(model, service.stacking))

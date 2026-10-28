@@ -29,4 +29,13 @@ rules:
       - pattern: $RESP.read()
       - pattern: $RESP.read1()
     paths:
-      include: [/bin/omapager_http.py]
+      include: [/bin/omapager_http.py, /bin/omapager-llm]
+  - id: no-second-http-client
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Only omapager_http and the model helper's literal loopback guard may open
+      a raw connection; anything else must go through the pinned transport.
+    pattern: http.client.HTTPConnection(...)
+    paths:
+      exclude: [/bin/omapager_http.py, /bin/omapager-llm]

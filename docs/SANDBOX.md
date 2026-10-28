@@ -16,9 +16,24 @@ must permit Bubblewrap; missing/blocked Bubblewrap causes helper failure.
 | store | Omapager state only | Runtime and own code | Isolated |
 | icon | State/icons only | System/user icon and application dirs, configured icon overrides | Isolated unless --fetch |
 | KDE | None | Only user bus socket, runtime and own code | Network namespace isolated; session D-Bus socket exposed |
+| secret | None | Only user bus socket | Isolated |
+| model | None | Only user bus socket, resolver and CA bundles | Shared, for the configured endpoint |
 
-The KDE socket exposes the session bus; it is **not destination-filtered**.
+The KDE socket exposes the session bus; it is **not** destination-filtered.
 The compatibility demo fixture is not exposed by the production launcher.
+
+`secret` is the API key's only path: the keyring lives on the session bus, so
+the profile gets that socket and nothing else — no network, no state directory,
+no home. It is the narrowest profile here on purpose.
+
+`model` is the one helper that is both networked and bus-connected, because it
+must reach the provider and the keyring. It cannot read the notification store,
+and the endpoint it contacts comes from the widget's settings, never from
+notification text. Remote endpoints are https on 443 through the pinned
+transport; a plain `http` endpoint is accepted only when the host is a literal
+loopback address (`127.0.0.1` or `::1`), which is how a local model server
+works and where the traffic cannot leave the machine. No hostname is resolved
+to decide this.
 
 The KDE profile requires an explicit `DBUS_SESSION_BUS_ADDRESS` using a single
 `unix:path=` socket (percent-escaped paths and an optional 32-hex `guid` are

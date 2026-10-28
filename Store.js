@@ -5,6 +5,7 @@
 .import "Security.js" as Security
 .import "Markup.js" as Markup
 .import "Detect.js" as Detect
+.import "Redact.js" as Redact
 
 // Everything a card draws and a history entry needs. Read defensively: these
 // come off the bus from arbitrary senders.
@@ -77,6 +78,9 @@ function snapshot(n, key, urgencyEnum) {
     link: found.link,
     meeting: found.meeting,
     phone: found.phone,
+    // A file the sender says it saved. Only offered after the activation
+    // helper confirms it is a real, non-executable file; see Service.qml.
+    filePath: found.filePath,
     image: img,
     urgency: typeof n.urgency === "number" ? n.urgency : urgencyEnum.Normal,
     expireTimeout: expire,
@@ -89,7 +93,7 @@ function snapshot(n, key, urgencyEnum) {
 var ROLES = ["originalId", "senderPid", "execArgv", "app", "appIcon", "summary", "body", "rawBody", "bodyRich",
              "bodyLine", "source", "groupKey", "image", "urgency",
              "expireTimeout", "duration", "ts",
-             "code", "codes", "link", "meeting", "phone", "replyPath", "replyTo"]
+             "code", "codes", "link", "meeting", "phone", "filePath", "replyPath", "replyTo"]
 
 function applyTo(model, index, row) {
   var current = model.get(index)
@@ -116,6 +120,7 @@ var SHAPE = {
   key: "", originalId: 0, senderPid: 0, execArgv: "", app: "", appIcon: "", summary: "", body: "",
   bodyRich: "", bodyLine: "", rawBody: "", source: "", groupKey: "", image: "",
   code: "", codes: "", link: "", meeting: false, phone: "", replyPath: "", replyTo: "",
+  filePath: "",
   stored_image: "", urgency: 1, expireTimeout: 0, duration: 0, ts: 0,
   restored: false
 }
@@ -254,5 +259,31 @@ function sanitiseForPersistence(row) {
   }
   out.replyPath = ""; out.replyTo = ""; out.image = ""; out.stored_image = ""
   out.execArgv = ""
+  return out
+}
+
+// The display-side filter: what a card is allowed to show. It is a separate
+// concern from persistence above, because marking a credential on screen is a
+// usability choice while writing one to disk is a vulnerability. Callers pass
+// "off", "mask" or "redact"; mask leaves the surrounding sentence readable.
+function filterSensitive(row, mode) {
+  if (mode !== "mask" && mode !== "redact") return row
+  var out = {}
+  for (var k in row) out[k] = row[k]
+  var fields = ["summary", "body", "bodyLine"]
+  var label = mode === "mask"
+  for (var i = 0; i < fields.length; i++) {
+    var name = fields[i]
+    var value = out[name]
+    if (typeof value !== "string" || !value) continue
+    out[name] = Redact.redact(value, [], label)
+  }
+  // Derived text is regenerated from the filtered body rather than filtered
+  // again: its markup and entity escapes would otherwise be masked as though
+  // they were the credential.
+  if (typeof out.body === "string") {
+    out.bodyRich = Markup.render(out.body)
+    if (!out.bodyLine) out.bodyLine = Markup.oneLine(out.body)
+  }
   return out
 }

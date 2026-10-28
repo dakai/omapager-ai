@@ -17,7 +17,13 @@
 // issue reference and a count of passing tests. Across 200 real notifications
 // on this machine, ten had a digit run of the right shape and none of them
 // were codes; every one would have been a false positive.
-var CODE_WORDS = /\b(code|otp|one[\s-]?time|verification|verify|passcode|pin|2fa|two[\s-]factor|security key|confirm(?:ation)?)\b/i
+//
+// CJK cannot be listed with \b: Chinese, Japanese and Korean have no spaces, so
+// there is no word boundary to anchor on and "验证码123456" is one run of text.
+// Those terms are therefore matched as plain substrings, in an alternation, and
+// they are the exact phrases an SMS uses - never a bare 密码/パスワード, which
+// means any password at all and would fire on ordinary text.
+var CODE_WORDS = /\b(code|otp|one[\s-]?time|verification|verify|passcode|pin|2fa|two[\s-]factor|security key|confirm(?:ation)?)\b|验证码|驗證碼|校验码|校驗碼|确认码|確認碼|認證碼|认证码|激活码|激活碼|动态码|動態碼|动态密码|動態密碼|一次性密码|一次性密碼|短信验证|短信驗證|验证代码|驗證代碼|認証コード|確認コード|認証番号|ワンタイムパスワード|인증번호|인증코드|인증 번호|인증 코드/i
 
 // "482913", "482 913", "84 2139", "482-913", "G-482913".
 var CODE_SHAPE = /(?:^|[^\w-])((?:[A-Za-z]-)?\d{2,4}[\s-]\d{2,5}|(?:[A-Za-z]-)?\d{4,8})(?![\w-])/g
@@ -36,6 +42,31 @@ function looksLikeYear(value) {
 var NEAR_BEFORE = 24
 var NEAR_AFTER = 72
 
+// A phone number is digits in exactly the shape a code is: "+44 1234 567890"
+// put "67890" inside the keyword window of every SMS that mentioned a code, and
+// the copy button then offered it instead of the real one. Phone numbers are
+// found separately, so the code scan removes them before it looks.
+// The same three shapes phones() accepts, so a number is either a phone here
+// or not one anywhere - never blanked here and invisible there.
+var PHONE_IN_TEXT = [
+  /\+\d[\d\s().-]{7,16}\d/g,              // +44 7911 123456
+  /\(\d{2,4}\)\s?\d{3,4}[\s-]?\d{3,4}/g,  // (020) 7946 0958
+  /\b0\d{1,4}[\s-]\d{3,4}[\s-]?\d{3,4}\b/g // 07911 123 456
+]
+
+function withoutPhones(t) {
+  var out = t
+  for (var i = 0; i < PHONE_IN_TEXT.length; i++) {
+    out = out.replace(PHONE_IN_TEXT[i], function (value) {
+      // Only a number with enough digits to be a phone; a build id is not one.
+      var digits = value.replace(/\D/g, "")
+      if (digits.length < 9 || digits.length > 15) return value
+      return new Array(value.length + 1).join(" ")
+    })
+  }
+  return out
+}
+
 // "Code" is also half a product name - Claude Code, VS Code, Xcode - and those
 // arrive dozens of times a day here. When the word is preceded by a
 // capitalised word it is a name, not an instruction, and the build number
@@ -53,12 +84,36 @@ function isProductName(t, at, word) {
   return !CODE_WORDS.test(before[1])
 }
 
+// A window edge must fall between tokens. Cutting at a fixed offset split the
+// six-digit code in a summary into "54321", which then passed the shape test as
+// a five-digit code and became the button the user actually got - the wrong one,
+// and one that copied nothing recognisable. Widening to the nearest whitespace
+// costs a few characters and cannot invent a number.
+// A seam must not fall inside a number or a word. Whitespace was the original
+// test and it does not exist in Chinese, so the rule is stated directly: if the
+// characters on both sides of the seam belong to the same alphanumeric run,
+// move the seam outward until they do not.
+var EDGE_CHARS = /[0-9A-Za-z_-]/
+
+function tokenEdge(t, at, direction) {
+  var i = at
+  if (direction < 0) {
+    while (i > 0 && EDGE_CHARS.test(t.charAt(i)) && EDGE_CHARS.test(t.charAt(i - 1))) i--
+  } else {
+    while (i < t.length && EDGE_CHARS.test(t.charAt(i - 1)) && EDGE_CHARS.test(t.charAt(i))) i++
+  }
+  return direction < 0 ? Math.max(0, i) : Math.min(t.length, i)
+}
+
 function windows(t) {
   var out = [], m
   var re = new RegExp(CODE_WORDS.source, "gi")
   while ((m = re.exec(t)) !== null) {
-    if (!isProductName(t, m.index, m[0]))
-      out.push([Math.max(0, m.index - NEAR_BEFORE), m.index + m[0].length + NEAR_AFTER])
+    if (!isProductName(t, m.index, m[0])) {
+      var from = tokenEdge(t, Math.max(0, m.index - NEAR_BEFORE), -1)
+      var to = tokenEdge(t, m.index + m[0].length + NEAR_AFTER, 1)
+      out.push([from, to])
+    }
     if (re.lastIndex === m.index) re.lastIndex++
   }
   return out.slice(0, Security.MAX_CODES)
@@ -76,7 +131,9 @@ function harvest(t, re, seen, out, keep) {
 }
 
 function codes(text) {
-  var t = Security.bounded(text, Security.MAX_BODY)
+  // Blanks rather than deletion: the windows below are measured in characters,
+  // so removing the phone number must not pull the code closer to the keyword.
+  var t = withoutPhones(Security.bounded(text, Security.MAX_BODY))
   var spans = windows(t)
   if (!spans.length) return []
 
@@ -154,6 +211,30 @@ function phones(text) {
   return out.slice(0, Security.MAX_CODES)
 }
 
+// Saved-file paths. A notification that says it wrote a file names it with an
+// absolute path, because that is the only form the sender can be sure of. The
+// path is not trusted: it goes through Security.safeLocalFilePath here and
+// again at activation, and the caller must confirm it exists before offering
+// anything at all.
+var FILE_EXT = /\.[A-Za-z0-9]{1,12}$/
+
+function paths(text) {
+  var t = Security.bounded(text, Security.MAX_BODY)
+  var out = [], seen = {}, m
+  var re = /(?:^|[\s("'[])((?:\/[^\/\s"'<>|]+){2,})(?=$|[\s)"'\].,:;])/g
+  while ((m = re.exec(t)) !== null) {
+    var path = String(m[1]).replace(/[.,:;]+$/, "")
+    if (seen[path]) continue
+    if (!Security.safeLocalFilePath(path)) continue
+    // A directory path with no extension is far more likely to be a URL's
+    // leftovers or a ratio than a file somebody just saved.
+    if (!FILE_EXT.test(path)) continue
+    seen[path] = true
+    out.push(path)
+  }
+  return out.slice(0, 4)
+}
+
 // Everything a card might offer, from the text it is going to draw. The body
 // passed in must be the one with the sender's own origin anchor already lifted
 // off: otherwise every Chrome notification offers to open the site it came
@@ -163,6 +244,7 @@ function scan(summary, body) {
   var code = codes(text)
   var link = links(text)
   var phone = phones(text)
+  var files = paths(text)
   return {
     code: code.length ? code[0] : "",
     // All of them, space separated. A message carrying two - "your code is
@@ -171,6 +253,7 @@ function scan(summary, body) {
     codes: code.join(" "),
     link: link.length ? link[0] : "",
     meeting: link.length ? isMeeting(link[0]) : false,
-    phone: phone.length ? phone[0] : ""
+    phone: phone.length ? phone[0] : "",
+    filePath: files.length ? files[0] : ""
   }
 }
