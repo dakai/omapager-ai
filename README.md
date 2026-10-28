@@ -15,6 +15,13 @@ A notification daemon for [Omarchy](https://omarchy.org) with grouped
 notifications, inline actions and screen-sharing detection. Replaces the built-in
 notification service and follows your Omarchy theme.
 
+> **This is a fork.** [dakai/omapager-ai](https://github.com/dakai/omapager-ai)
+> tracks [njpatel/omapager](https://github.com/njpatel/omapager) and adds a
+> preferences window, an optional model layer for duplicate detection and
+> suggested actions, a local sensitive-text filter, saved-file actions, and
+> verification codes in Chinese, Japanese and Korean text. The plugin id stays
+> `njpatel.omapager`, so it installs over the original.
+
 <img src="assets/native-card-2x.png" width="410" alt="Original demo notifications from Slack, WhatsApp and GitHub with their source icons">
 
 ## Features
@@ -35,6 +42,11 @@ to expand the group and read or act on each notification.
 
 **Code, link and phone actions.** Copy verification codes and phone numbers, or
 open links, directly from a notification. Multiple codes get separate buttons.
+A phone number in the same message is never taken for a code, and neither is a
+number the keyword window happened to cut in half. Chinese, Japanese and Korean
+verification texts are recognised too (`验证码`, `驗證碼`, `激活码`, `認証コード`,
+`인증번호` and similar), which need their own matching because CJK has no word
+boundaries for the English keywords to anchor on.
 
 <img src="assets/native-actions-2x.png" width="410" alt="Google verification notification with its source icon, Copy code action and compact close button">
 
@@ -46,8 +58,11 @@ notification.
 
 <img src="assets/reply.png" width="410" alt="Local reply demo using Seif Lotfy's original message, a WhatsApp icon and the native reply field">
 
-**Window focus.** Click a notification to focus its app or browser window.
-Web notifications open their source URL when no matching window is available.
+**Window focus.** A card click focuses its app or browser window and leaves the
+card where it is; web notifications open their source URL when no matching
+window is available. `allowDefaultActionOnCardClick` additionally lets a click
+invoke the sender's default action. The close control and middle-click dismiss,
+so a mis-click cannot lose a notification.
 
 **Snooze and Do Not Disturb.** Right-click a notification to snooze its source.
 Use the panel to snooze everything or toggle Do Not Disturb.
@@ -85,12 +100,13 @@ addresses and phone numbers in a message can be masked on the card, and are
 redacted from history regardless. Set `sensitiveFilter` to `mask` or
 `redact`; the rules run locally and no model is involved.
 
-**Optional model layer.** Omapager can ask an OpenAI-compatible endpoint to
-recognise a duplicated message from a second source, or to point out an action a
-card should offer. It is off until you choose a provider. The model never adds a
-capability: a suggested button is shown only when the notification already
-contained the thing it points at. The API key is kept in the desktop keyring,
-not in `shell.json`.
+**Optional model layer.** Omapager can ask a model to recognise a duplicated
+message from a second source, or to point out an action a card should offer. It
+is off until you choose a provider. Two questions with two kinds of answer: a
+duplicate is a yes or no, an action is a suggestion that must point at text the
+notification already contains. The model cannot add a link, a path or a command,
+so a prompt injected through a message body can at worst make a card offer
+nothing useful. The API key is kept in the desktop keyring, not in `shell.json`.
 
 **Saved files.** When a message names a file it just saved, the card grows a
 File button: Reveal, Properties, Open, or copy the path. A notification surface
@@ -104,7 +120,18 @@ step 1, then enable Omapager in step 2.
 
 ### 1. Install
 
-#### Releases via the marketplace
+#### This fork, via Git
+
+The plugin id is unchanged, so this installs over an existing Omapager:
+
+```bash
+git clone --branch feature/llm-settings https://github.com/dakai/omapager-ai.git \
+  ~/.config/omarchy/plugins/njpatel.omapager
+```
+
+`main` on the fork will carry these changes once the branch is merged.
+
+#### Upstream releases via the marketplace
 
 Find Omapager in the [Omarchy Plugin Marketplace](https://omarchyplugins.com/)
 and run its install command:
@@ -113,16 +140,8 @@ and run its install command:
 omarchy plugin add https://github.com/njpatel/omapager.git
 ```
 
-Until the new stable release is approved, the marketplace installs Git HEAD.
-
-#### Edge via Git
-
-Clone `main` for the latest changes between releases:
-
-```bash
-git clone --branch main https://github.com/njpatel/omapager.git \
-  ~/.config/omarchy/plugins/njpatel.omapager
-```
+That installs upstream, without the features listed at the top of this file.
+Until a stable release is approved, the marketplace installs Git HEAD.
 
 ### 2. Enable Omapager
 
@@ -138,15 +157,16 @@ omarchy restart shell
 
 ### Updates
 
-Use the marketplace for release updates. For an edge checkout:
+For this fork, pull the branch you installed:
 
 ```bash
 git -C ~/.config/omarchy/plugins/njpatel.omapager pull --ff-only
 omarchy restart shell
 ```
 
-[Release notes](https://github.com/njpatel/omapager/releases) describe each update.
-Do not use `omarchy refresh shell`, which resets your shell configuration.
+[Release notes](https://github.com/dakai/omapager-ai/blob/feature/llm-settings/RELEASE.md)
+describe each update. Do not use `omarchy refresh shell`, which resets your shell
+configuration.
 
 ### Remove Omapager
 
@@ -163,9 +183,10 @@ want to remove the stored data.
 
 ## Settings
 
-Open the panel and click the settings cog to choose a notification display,
-choose when to step aside for fullscreen windows, toggle countdown animation or
-control screen-sharing snooze suggestions.
+Two places, one setting per place. The panel's cog opens a short page of
+toggles; a row at the end of that page opens the full preferences window for the
+settings that need room - provider, endpoint, model, key, and what the model may
+do.
 
 <img src="assets/display-settings-2x.png" width="420" alt="Notification preferences for display, countdown animation and screen-sharing snooze suggestions">
 
@@ -215,10 +236,9 @@ below apply to new configurations, not choices you have already saved.
 | `llmIntent` | `true` | Let the model point out a code, link, phone number or file the card should offer. A suggestion must point at text the notification already contains. |
 
 The API key is not a `shell.json` option and cannot be set there. Choose a
-provider, then open the preferences window from the bar panel's cog and paste
-the key: it goes to the desktop keyring (libsecret) and is never written to
-disk, argv or a log. On a machine with no secret service the model section
-disables itself.
+provider, then open the preferences window and paste the key: it goes to the
+desktop keyring (libsecret) and is never written to disk, argv or a log. On a
+machine with no secret service the model section disables itself.
 
 Add options to the existing widget entry. This example is not a complete
 `shell.json` file:
@@ -232,6 +252,93 @@ Add options to the existing widget entry. This example is not a complete
   "historyHours": 24
 }
 ```
+
+### The model layer
+
+Off until a provider is chosen. Two separate jobs, which can use two separate
+models.
+
+**Duplicates.** The same message often arrives twice, once in the app and again
+in a mail or chat bridge. Two stages:
+
+1. **Local, always.** The words are normalised - lowercased, URLs and
+   punctuation removed - and compared against everything still on screen from a
+   *different* source within two minutes. Nothing is sent anywhere and no model
+   is involved. Identical text is merged even with the model layer off.
+2. **Model, optional.** When the words differ but look alike, the model is asked
+   about that one pair. It is shown both messages, not just the new one, which is
+   the whole question. A "yes" is then re-checked locally: a card from another
+   source must still be on screen and must read at least 60% alike. The newer
+   card closes; the older one stays.
+
+Critical notifications are never merged, and a source is never compared against
+itself - one app talking twice is that app talking twice.
+
+**Suggested actions.** The model may point out a code, link, phone number or
+file the card should offer. A suggestion is accepted only when its value appears
+verbatim in the text the card is already showing, and then only if it
+re-validates as the kind it claims to be. `reply` and `action` are dropped
+outright: those belong to the sender's own action list, which the model cannot
+see or extend.
+
+**Two ways to ask.** `llmDedupeApi` picks the protocol for the duplicate
+question:
+
+- `chat` - both notifications go to an OpenAI-compatible chat model and the JSON
+  reply is parsed.
+- `systemone` - one yes/no question goes to a [System One](https://docs.typesafe.ai)
+  model such as Jev (`group/jev` at Magpie). It answers with a probability
+  instead of prose: no generation, nothing to parse, roughly 0.8 s against 2.5 s
+  for a chat model and stable between runs. A card merges at 0.7 or above, the
+  vendor's recommended yes threshold.
+
+**Cost and failure.** One request is in flight at a time, the queue is capped,
+and nothing waits on the network before a card is drawn. A provider that is down
+or slow costs the feature and nothing else; cards still arrive, and the guard
+that drops a stuck helper is 20 seconds, above the helper's own deadline.
+
+**Presets.** `ollama`, `lmstudio` and `llamacpp` assume a local server on its
+default port and speak plain `http` on loopback, which never leaves the machine.
+`openrouter`, `openai` and `deepseek` are `https` on port 443 through the pinned
+transport. `custom` takes any OpenAI-compatible base URL ending in `/v1`.
+
+**Checking it.** The preferences window's *Test connection* asks the provider for
+its model list, then sends one small question to the duplicate model if one is
+set, so a model id that is listed but refuses every call is reported rather than
+silently never merging. The same check is available without the UI:
+
+```bash
+bin/omapager-run-llm status custom https://example.com/v1 model-name group/jev systemone
+# {"reachable": true, "detail": "ok",
+#  "dedupe": {"model": "group/jev", "ok": true, "detail": "ok"}}
+```
+
+`omarchy-shell omapager probe` reports the live state instead: the provider, the
+two models, which API each question uses, the queue depth and the last answer.
+
+### Sensitive text
+
+`sensitiveFilter` decides how much of a credential the card may draw. The rules
+run locally; no model is involved.
+
+| Setting | Effect |
+| --- | --- |
+| `off` | The card shows the message as written. History is still redacted. |
+| `mask` | The value becomes `••••••` and the kind is kept, for example `•••••• (API_KEY)`. The sentence around it stays readable. |
+| `redact` | The value becomes `••••••` with no kind. |
+
+Recognised by shape: private keys, API keys (`sk-`, `ghp_`, `AKIA`, `AIza`,
+`xox`, `hf_`, `gsk_`, `npm_`, `pypi_`, and similar), JWTs, passwords inside
+connection URLs, email addresses, IBANs, card numbers that pass Luhn, and phone
+numbers. Recognition is heuristic: an unusual format is not found, and an
+ordinary string that happens to match a shape is hidden.
+
+Two layers exist on purpose. `Redact.js` runs in the shell for what is drawn;
+`bin/omapager-store` has its own copy for what reaches disk. A bug in one cannot
+let a secret reach the screen and the disk at the same time, and the tests check
+that the two agree. Persistence acts on credentials only - a message that signs
+off with an email address is still a message, and destroying the whole history
+row because of it would lose more than it protects.
 
 ### Appearance inherited from Omarchy
 
@@ -284,13 +391,18 @@ waiting. Hover the centre of the bar to reveal it at other times.
 
 | Indicator | Meaning |
 | --- | --- |
-| Crossed-out bell in the urgent colour | Do Not Disturb |
+| Plain bell, full strength | Notifications are on |
+| Crossed-out bell in grey | Do Not Disturb |
 | Sleeping bell in the accent colour | A source or all notifications are snoozed |
 | Sharing icon in the accent colour | Sharing detected. Click to choose a snooze. |
-| Dimmed bell | Nothing held back |
+
+Grey rather than red for Do Not Disturb: silencing is a decision, not a fault,
+and the slashed bell already says "off". The ordinary state is a plain bell at
+full strength, so a working desktop never looks switched off.
 
 Left-click the bell to silence or resume notifications. Right-click to open the
-panel for Recent, History, held messages and snooze controls.
+panel for Recent, History, held messages and snooze controls. `swapMouseButtons`
+trades the two, on this icon only; cards keep right-click for the source menu.
 
 ## Keybindings
 
@@ -304,14 +416,20 @@ Omarchy's existing comma-key shortcuts work without configuration:
 | `SUPER` `ALT` `,` | invoke the newest one, as clicking it would |
 | `SUPER` `SHIFT` `ALT` `,` | put the last few back on screen |
 
-Omarchy screenshot toasts carry `omarchy-exec-argv`. Click and Super+Alt+, run that
-editor. The same gestures open a Taildrop notification's local file or launch
-Omarchy's configured agent to diagnose a crash by PID. Crash details are retrieved
-by the agent, not taken from notification-supplied metadata. Taildrop opening
-requires an existing non-executable regular file at an absolute path; URLs,
-traversal, final symlinks and `.desktop` launchers are refused. These actions are
-checked again when activated and are never restored from history. They do not
-require `allowDefaultActionOnCardClick`.
+Omarchy screenshot toasts carry `omarchy-exec-argv`. Clicking such a card, or
+Super+Alt+`,`, runs that editor. The same gesture opens a Taildrop notification's
+local file or launches Omarchy's configured agent to diagnose a crash by PID.
+Crash details are retrieved by the agent, not taken from notification-supplied
+metadata. Taildrop opening requires an existing non-executable regular file at an
+absolute path; URLs, traversal, final symlinks and `.desktop` launchers are
+refused. These actions are checked again when activated and are never restored
+from history. They do not require `allowDefaultActionOnCardClick`.
+
+A card click on an ordinary notification focuses the sender's window, or opens
+the source URL when there is none, and leaves the card in place. It never
+dismisses. Only cards whose sender declared an action - a screenshot editor, a
+saved file - act on a click, because that click is the thing the sender asked
+for.
 
 ### Optional bindings
 
@@ -355,6 +473,22 @@ omarchy-shell omapager.panel toggle     the panel
 omarchy-shell omapager.panel expand x   open a source's held list, as clicking it would
 omarchy-shell omapager.panel openSettings  notification preferences
 ```
+
+`probe` is the headless source of truth: the deck, the quiet state, the sandbox
+mode, the display routing, the model provider and both of its models, the queue
+depth, the last answer, and how many rows Recent holds.
+
+The helpers can be exercised on their own, which is how a provider or a keyring
+is checked without touching a notification:
+
+```bash
+bin/omapager-run-llm status custom https://example.com/v1 model-name
+bin/omapager-run-llm models custom https://example.com/v1 model-name
+bin/omapager-run-secret status          # {"available": true, "stored": false}
+```
+
+`bin/omapager-llm` also takes `ask` and `judge` verbs, reading one notification
+as JSON on stdin; `judge` is the System One path and needs a comparison card.
 
 ## Demo
 
@@ -412,20 +546,58 @@ These protections apply with or without Bubblewrap:
 Keep Python, Pillow and the system libraries updated. These checks do not protect
 against another process running as your user and modifying the local cache.
 
+### What the model layer sends
+
+This is the only part of Omapager that sends notification text off the machine,
+and it does nothing until a provider is chosen.
+
+- **What is sent.** The summary and body of a notification, after the display
+  filter has run, so a credential the card was told to mask is not in the
+  request. Nothing else: no history, no images, no other notifications.
+- **Where it goes.** The provider you configured. Local presets (`ollama`,
+  `lmstudio`, `llamacpp`) talk to `127.0.0.1` or `::1` over plain `http` and
+  never leave the machine. Remote endpoints are `https` on port 443.
+- **How it is checked.** Remote requests use the same pinned-address transport
+  as icon fetching: every DNS answer is validated before connecting, TLS is
+  validated against the original hostname, and proxies in the environment cannot
+  redirect it. A redirect from an API endpoint is refused rather than followed,
+  because following one would carry the Authorization header to a host you did
+  not choose.
+- **What it can do.** Return advice that is re-checked locally. It cannot open a
+  URL, run a command or dismiss a notification by itself.
+- **When it fails.** Requests are abandoned after 20 seconds, one at a time, and
+  the feature switches itself off for that notification. A card is never held
+  back waiting for a model.
+
+One deliberate exception in the sandbox: the model helper is the only one that
+is both networked and connected to the session bus, because it must reach the
+provider and the keyring. It cannot read the notification store. See
+[the sandbox table](docs/SANDBOX.md).
+
+### The API key
+
+Kept in the desktop keyring through libsecret. It is not in `shell.json`, not in
+the state directory, not in a command line, and not in any log line. The
+preferences window only ever learns whether one is stored, never its value. On a
+machine with no secret service the model section disables itself; there is no
+plaintext fallback.
+
 ### Optional helper sandbox
 
-Storage, icon and KDE Connect helpers use Bubblewrap when its startup check
-succeeds. Otherwise they run directly as your user, with your account's normal
-filesystem and network access. Input validation and resource limits still apply.
+Storage, icon, KDE Connect, secret and model helpers use Bubblewrap when its
+startup check succeeds. Otherwise they run directly as your user, with your
+account's normal filesystem and network access. Input validation and resource
+limits still apply.
 
 Set `"requireSandbox": true` in the widget's `shell.json` entry to block helpers
-when sandboxing is unavailable. This affects persistence, icon lookup and phone
-replies. The saved policy applies before startup helpers run. A failed helper
-is never retried without its sandbox.
+when sandboxing is unavailable. This affects persistence, icon lookup, phone
+replies and the model layer. The saved policy applies before startup helpers run.
+A failed helper is never retried without its sandbox.
 
-Sandboxed helpers receive access to the files they need. Remote icons still need
-network access, and KDE Connect receives the session bus without destination
-filtering. Bubblewrap does not isolate the QML shell itself.
+Sandboxed helpers receive access to the files they need. Remote icons and remote
+model endpoints still need network access, and KDE Connect receives the session
+bus without destination filtering. The secret helper gets the bus and nothing
+else. Bubblewrap does not isolate the QML shell itself.
 
 Run `omarchy-shell omapager probe` to check whether helpers use `sandboxed`,
 `direct` or `blocked` mode. See [the security architecture](docs/SECURITY_ARCHITECTURE.md)
@@ -434,13 +606,20 @@ for the exact limits and access rules.
 ### Stored notifications and clipboard
 
 Disk history defaults to 24 hours and 100 entries. Omapager redacts detected
-verification-code notifications before saving them, but detection cannot identify
-every secret. Copied codes clear after the configured timeout only if the
-clipboard still contains the same code.
+verification-code notifications before saving them, and with `sensitiveFilter`
+set it redacts credential shapes as well, but detection cannot identify every
+secret. Copied codes clear after the configured timeout only if the clipboard
+still contains the same code.
 
-State lives in `~/.local/state/omarchy/omapager/`. See [settings](#settings) for
-retention and clipboard options, and [SECURITY.md](SECURITY.md) to report a
-vulnerability.
+The Recent list is session-only memory. Its drawn text is redacted exactly as
+history is; the offers behind each row's buttons (a code, a link, a number) are
+held in memory for the session so the row stays actionable, and are never written
+to disk. Removing a row, or closing the shell, drops them.
+
+State lives in `~/.local/state/omarchy/omapager/`. The API key is the one thing
+that does not: it lives in the desktop keyring, never here. See
+[settings](#settings) for retention and clipboard options, and
+[SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## Requirements
 
