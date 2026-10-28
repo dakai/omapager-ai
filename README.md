@@ -96,7 +96,7 @@ Click a card to expand its message, then scroll to read the rest. `historyHours`
 controls retention; `0` disables disk history. Detected verification codes stay
 redacted.
 
-<img src="assets/native-panel-2x.png" width="420" alt="Notification panel with recent messages from the demo scenes">
+<img src="assets/native-panel-2x.png" width="420" alt="The notification panel with History expanded: redacted verification notifications beside a Slack deploy message, and the Fork Client notification it replaces">
 
 **Source icons.** Use local icons or fetch missing website icons automatically.
 Set `fetchRemoteIcons` to `false` in the config to disable fetching.
