@@ -1121,4 +1121,34 @@ for (const u of ['https://example.com/', 'https://sub.example.co.uk/', 'https://
   assert.equal(slack.execArgv, '');
 }
 
+// Reply and lookup text is private to the user. It reaches the helper on stdin;
+// the command array carries only the verb, the discovered path and the app
+// name, because every local user can read a process's argv out of /proc.
+{
+  const body='PRIVATE-BODY-Zx9-unique-private-message-4711', text='PRIVATE-REPLY-Zx9-unique-private-message-4711';
+  const path='/modules/kdeconnect/devices/device/notifications/7';
+  const writes=[];
+  const proc={running:false,stdinEnabled:false,command:[],write(d){writes.push(String(d));}};
+  const scope={
+    helperSettingsReady:true,kdeBin:'/bin/omapager-run-kdeconnect',
+    replyQueue:[{key:'k',source:'Chat',body:body,tries:0}],
+    findProc:proc,replyProc:proc,
+    toasts:{get(){return {replyPath:path,source:'Chat',bodyLine:body};}},
+    rowIndexFor(){return 0;}
+  };
+  vm.createContext(scope);
+  vm.runInContext(extract(source,'function pumpReplies()','\n  Timer {')+'\n'+
+                  extract(source,'function sendReply(key, text)','\n  // ------------------------------------------------------------- offers'),scope);
+  scope.pumpReplies();
+  // The vm builds its arrays in another realm, so compare the values, not the prototype.
+  assert.equal(proc.command.join('\u0000'),'/bin/omapager-run-kdeconnect\u0000find\u0000Chat');
+  assert.ok(writes[0].includes(JSON.stringify(body).slice(1,-1)),'lookup body must reach stdin');
+  proc.running=false;writes.length=0;
+  scope.sendReply('k',text);
+  assert.equal(proc.command.join('\u0000'),['/bin/omapager-run-kdeconnect','reply',path,'Chat'].join('\u0000'));
+  assert.ok(writes[0].includes(text),'reply text must reach stdin');
+  for(const argv of [proc.command])
+    for(const part of argv) assert.ok(!part.includes('PRIVATE-'),'private text reached argv: '+part);
+}
+
 console.log('security JS: passed');

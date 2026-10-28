@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Keep KDE Connect message and reply text out of process arguments. Lookups and
+  replies now reach `bin/omapager-kdeconnect` on stdin, and `sendReply` is sent
+  over the session-bus socket instead of through `busctl`, so neither the
+  notification body nor the reply appears in any `/proc/PID/cmdline`. Display
+  and history redaction never covered this path, because the helper matches
+  against the raw body by design. `tests/test_kdeconnect_argv.py` holds the
+  helper alive with the text on an open pipe and fails if the text appears in
+  any command line, in direct and sandboxed mode.
 - Honour Omarchy screenshot toasts' `omarchy-exec-argv` on click and Super+Alt+,.
   Allowlist tensaku-edit, tensaku, satty, swappy and omasnap as a bare name or
   under /usr/bin and /usr/local/bin. Drop the argv from history. App names

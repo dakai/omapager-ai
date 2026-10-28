@@ -42,6 +42,19 @@ integration stability, as the plan requires.
    default action unless configured; that action is available as an explicit
    "Open in app" button. Replies require unique exact app/body matching, valid
    discovered KDE paths, and a second match immediately before send.
+   Message text is never an argument. KDE Connect forwards private SMS and chat
+   bodies into notifications, and a reply carries the user's own words back, so
+   neither may sit in a command line: `/proc/PID/cmdline` is world-readable on a
+   default Linux system, and another local user can read it while the helper
+   runs. The lookup and the reply travel to `bin/omapager-kdeconnect` on stdin as
+   `{"body": …}` / `{"text": …, "body": …}`; argv carries only the verb, the app
+   name and the discovered object path. The final hop keeps the rule: `sendReply`
+   is marshalled over the session-bus socket by the helper itself rather than
+   handed to `busctl`, which would put the same text into a third process's argv.
+   `busctl` remains in use for calls that carry no message text. Redaction is
+   not a substitute for this: the display filter masks the card and the history
+   write, while the raw body is what the phone's copy is matched against, so the
+   transport has to protect the raw value.
    The helper preserves the explicitly selected local session-bus socket; it
    does not substitute the host session when running inside a private session.
    Omarchy `omarchy-action` toasts may also carry `omarchy-exec-argv`. That argv

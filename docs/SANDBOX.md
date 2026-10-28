@@ -22,6 +22,11 @@ must permit Bubblewrap; missing/blocked Bubblewrap causes helper failure.
 The KDE socket exposes the session bus; it is **not** destination-filtered.
 The compatibility demo fixture is not exposed by the production launcher.
 
+That profile also receives the caller's stdin, which is how a notification body
+or a reply reaches it: the text is read from the pipe and the `sendReply` call is
+marshalled over the same bus socket. Neither value is ever a process argument,
+so `/proc/PID/cmdline` shows only the verb, the app name and the object path.
+
 `secret` is the API key's only path: the keyring lives on the session bus, so
 the profile gets that socket and nothing else — no network, no state directory,
 no home. It is the narrowest profile here on purpose.

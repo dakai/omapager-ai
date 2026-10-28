@@ -282,11 +282,69 @@ class Replies(unittest.TestCase):
         payloads=['; rm -rf ~','$(touch /tmp/pwned)','`touch /tmp/pwned`','--help','quotes"\n\\']
         target='/modules/kdeconnect/devices/device/notifications/1'
         for text in payloads:
-            with patch.object(sys,'argv',['helper','reply',target,text,'Chat','body']),patch.object(self.k,'find',return_value={'path':target}),patch.object(self.k.subprocess,'run',return_value=MagicMock(returncode=0)) as run:
-                with contextlib.redirect_stdout(io.StringIO()): self.assertEqual(self.k.main(),0)
-                self.assertEqual(run.call_args_list[0].args[0][-1],text)
-                self.assertEqual(run.call_args_list[0].args[0][2],"--")
-                self.assertNotIn('shell',run.call_args_list[0].kwargs)
+            with patch.object(sys,'argv',['helper','reply',target,'Chat']), \
+                 patch.object(self.k,'request',return_value={'text':text,'body':'body'}), \
+                 patch.object(self.k,'find',return_value={'path':target}), \
+                 patch.object(self.k,'send_reply',return_value=True) as reply, \
+                 patch.object(self.k.subprocess,'run',return_value=MagicMock(returncode=0)) as run:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(self.k.main(),0)
+            # The text is handed over whole, never interpreted, and the one
+            # remaining subprocess is a fixed busctl call with no text in it.
+            self.assertEqual(reply.call_args.args,(target,text))
+            for call in run.call_args_list:
+                self.assertNotIn(text,call.args[0])
+                self.assertNotIn('shell',call.kwargs)
+
+    def test_message_text_never_reaches_argv(self):
+        """Another local user can read /proc/PID/cmdline. They cannot read stdin."""
+        target='/modules/kdeconnect/devices/device/notifications/1'
+        secret='Zx9-unique-private-message-4711'
+        seen=[]
+        def record(*args,**kwargs):
+            seen.append((args,kwargs))
+            return MagicMock(returncode=0)
+        with patch.object(sys,'argv',['helper','reply',target,'Chat']), \
+             patch.object(self.k,'request',return_value={'text':secret,'body':secret}), \
+             patch.object(self.k,'find',return_value={'path':target}), \
+             patch.object(self.k,'send_reply',return_value=True) as reply, \
+             patch.object(self.k.subprocess,'run',side_effect=record):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.k.main()
+        # The reply the helper was asked to send carries the text...
+        self.assertEqual(reply.call_args.args[1],secret)
+        # ...and no process argument and no sys.argv does.
+        self.assertNotIn(secret,sys.argv)
+        for args,kwargs in seen:
+            command = args[0] if args else []
+            for value in command:
+                self.assertNotIn(secret,str(value))
+            for value in kwargs.values():
+                self.assertNotIn(secret,str(value))
+        self.assertTrue(seen, 'the dismissal call still has to run')
+
+    def test_find_reads_its_body_from_stdin_not_argv(self):
+        secret='Zx9-unique-private-message-4711'
+        seen=[]
+        with patch.object(sys,'argv',['helper','find','Chat']), \
+             patch.object(self.k,'request',return_value={'body':secret}), \
+             patch.object(self.k,'find',return_value=None) as find:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.k.main()
+        self.assertEqual(find.call_args.args,( 'Chat',secret))
+        self.assertNotIn(secret,sys.argv)
+
+    def test_request_rejects_oversized_or_malformed_stdin(self):
+        for payload in (b'not json', b'[]', b'{"body": 5}', b'x'*(self.k.MAX_REQUEST+1)):
+            with patch.object(self.k.sys,'stdin',io.TextIOWrapper(io.BytesIO(payload))):
+                self.assertEqual(self.k.request(),{})
+
+    def test_request_keeps_only_known_string_fields(self):
+        payload=io.TextIOWrapper(io.BytesIO(json.dumps(
+            {'text':'a','body':'b','path':'/x','extra':'c'}).encode()))
+        with patch.object(self.k.sys,'stdin',payload):
+            self.assertEqual(self.k.request(),{'text':'a','body':'b'})
+
     def test_demo_cannot_impersonate_a_real_phone_app(self):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Path(temp) / 'notification.json'
@@ -310,8 +368,10 @@ class Replies(unittest.TestCase):
                 self.assertIsNotNone(original)
                 current['token'] = 'b' * 32
                 files.write_json(fixture, current)
-                with patch.object(sys, 'argv', ['helper', 'reply', original['path'], 'must not be sent',
-                                               'Omapager reply demo', 'Demo sender: hello']):
+                with patch.object(sys, 'argv', ['helper', 'reply', original['path'],
+                                                'Omapager reply demo']), \
+                     patch.object(self.k, 'request', return_value={
+                         'text': 'must not be sent', 'body': 'Demo sender: hello'}):
                     self.assertEqual(self.k.main(), 1)
                 self.assertFalse(reply.exists())
                 current['created'] = time.time() - self.k.FIXTURE_MAX_AGE - 1

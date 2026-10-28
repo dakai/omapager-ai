@@ -164,10 +164,10 @@ def sandbox_command(kind, args, bwrap, environ):
         # A reply demo gets only its private fixture/result directory. Normal
         # phone operations never receive the notification store mount.
         demo_app = "Omapager reply demo"
-        demo_request = (len(args) == 3 and args[:2] == ["find", demo_app]) or (
-            len(args) == 5 and args[0] == "reply"
+        demo_request = (len(args) == 2 and args == ["find", demo_app]) or (
+            len(args) == 3 and args[0] == "reply"
             and re.fullmatch(r"demo:[0-9a-f]{32}", args[1]) is not None
-            and args[3] == demo_app)
+            and args[2] == demo_app)
         demo = STATE / "reply-demo"
         if demo_request and demo.is_dir() and not demo.is_symlink():
             private_dir(demo)

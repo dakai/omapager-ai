@@ -2,8 +2,8 @@
 # omapager-kdeconnect - the phone's side of a notification.
 #
 #   omapager-kdeconnect list                     every phone notification, as JSON
-#   omapager-kdeconnect find APP BODY            the object path of a repliable match
-#   omapager-kdeconnect reply PATH TEXT          send a reply back to the phone
+#   omapager-kdeconnect find APP                 the object path of a repliable match
+#   omapager-kdeconnect reply PATH APP           send a reply back to the phone
 #
 # KDE Connect posts phone notifications to the desktop bus like any other app,
 # and that is all the freedesktop spec can carry. But it also keeps an object
@@ -11,13 +11,25 @@
 # replyId, and a sendReply method that puts text back into the conversation on
 # the phone. Matching the two is by app name and body text, because the desktop
 # notification carries no handle to the object.
+#
+# Message text never travels in argv. `find` reads {"body": ...} from stdin and
+# `reply` reads {"text": ..., "body": ...}. argv carries only the app name, the
+# discovered object path and the verb. Another local user can read any process's
+# /proc/PID/cmdline; without hidepid they cannot read its stdin pipe. The last
+# hop keeps the same rule: sendReply is sent by _session_call below over the
+# bus socket the sandbox already mounts, because `busctl` would put the text
+# back into an argv one process further along.
+import binascii
 import json
 import os
+import socket
+import struct
 import subprocess
 import sys
 import time
 import re
 import selectors
+from urllib.parse import unquote
 from omapager_files import read_json, write_json
 
 BUS = "org.kde.kdeconnect"
@@ -32,6 +44,11 @@ STATE = os.path.join(os.environ.get("XDG_STATE_HOME",
 FIXTURE = os.path.join(STATE, "notification.json")
 REPLY_LOG = os.path.join(STATE, "reply.json")
 FIXTURE_MAX_AGE = 30 * 60
+
+# The request body is one notification's worth of text, or one reply. The
+# largest live value either side accepts is 4096; this is the transport bound.
+MAX_REQUEST = 65536
+BUS_TIMEOUT = 5
 
 
 def fixture():
@@ -83,6 +100,160 @@ def paths():
             if valid_path(token):
                 out.append(token)
     return out[:100]
+
+
+def request():
+    """The caller's message text, which must not be in argv.
+
+    Reading the pipe to EOF is the frame: there is no length prefix to trust and
+    no second message to swallow. Anything unparseable is an empty request, the
+    same fail-closed answer as a body that matches nothing.
+    """
+    try:
+        raw = sys.stdin.buffer.read(MAX_REQUEST + 1)
+    except OSError:
+        return {}
+    if len(raw) > MAX_REQUEST:
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8", "strict") or "{}")
+    except (ValueError, UnicodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {key: value for key, value in data.items()
+            if isinstance(value, str) and key in ("text", "body")}
+
+
+# ---------------------------------------------------------------- bus
+#
+# A method call with one string argument, over the socket the sandbox already
+# mounts. `busctl` cannot be used for this one call: it takes its arguments from
+# argv, which is exactly where the reply text must not go. The wire format here
+# is the small, fixed part of the D-Bus spec this needs - a little-endian
+# METHOD_CALL with PATH, INTERFACE, MEMBER, DESTINATION and SIGNATURE, and no
+# reply body we need to decode, only the reply type.
+def _aligned(offset, boundary):
+    return (offset + boundary - 1) & ~(boundary - 1)
+
+
+def _recv_exact(sock, size):
+    data = bytearray()
+    while len(data) < size:
+        block = sock.recv(size - len(data))
+        if not block:
+            raise OSError("bus closed the connection")
+        data.extend(block)
+    return bytes(data)
+
+
+def _field(buf, code, signature, value):
+    buf.extend(b"\0" * (_aligned(len(buf), 8) - len(buf)))
+    buf.append(code)
+    buf.append(len(signature))
+    buf.extend(signature.encode())
+    buf.append(0)
+    if signature == "g":
+        # A signature value is not a string: one length byte, no padding.
+        buf.append(len(value))
+        buf.extend(value.encode())
+        buf.append(0)
+        return
+    buf.extend(b"\0" * (_aligned(len(buf), 4) - len(buf)))
+    raw = value.encode()
+    buf.extend(struct.pack("<I", len(raw)))
+    buf.extend(raw)
+    buf.append(0)
+
+
+def _send(sock, serial, destination, path, interface, member, text):
+    body = b""
+    signature = ""
+    if text is not None:
+        raw = text.encode()
+        body = struct.pack("<I", len(raw)) + raw + b"\0"
+        signature = "s"
+    fields = bytearray()
+    _field(fields, 1, "o", path)
+    _field(fields, 2, "s", interface)
+    _field(fields, 3, "s", member)
+    _field(fields, 6, "s", destination)
+    if signature:
+        _field(fields, 8, "g", signature)
+    message = bytearray(b"l\x01\x00\x01")
+    message.extend(struct.pack("<I", len(body)))
+    message.extend(struct.pack("<I", serial))
+    message.extend(struct.pack("<I", len(fields)))
+    message.extend(fields)
+    message.extend(b"\0" * (_aligned(len(message), 8) - len(message)))
+    message.extend(body)
+    sock.sendall(bytes(message))
+    return _reply(sock)
+
+
+def _reply(sock):
+    # A connection carries signals as well as replies - saying Hello is itself
+    # followed by NameAcquired - so read past anything that is not a method
+    # return (2) or an error (3). One call is outstanding at a time.
+    for _ in range(16):
+        head = _recv_exact(sock, 16)
+        body_length = struct.unpack("<I", head[4:8])[0]
+        array_length = struct.unpack("<I", head[12:16])[0]
+        total = _aligned(12 + 4 + array_length, 8) + body_length
+        _recv_exact(sock, total - 16)
+        if head[1] in (2, 3):
+            return head[1]
+    raise OSError("bus sent no reply")
+
+
+def _line(sock):
+    data = bytearray()
+    while len(data) < 1024:
+        character = sock.recv(1)
+        if not character:
+            break
+        if character == b"\n":
+            return bytes(data).rstrip(b"\r")
+        data.extend(character)
+    return bytes(data)
+
+
+def _connect():
+    address = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    if not address.startswith("unix:path="):
+        raise OSError("unsupported session bus address")
+    path = unquote(address[len("unix:path="):].split(",", 1)[0])
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(BUS_TIMEOUT)
+        sock.connect(path)
+        sock.sendall(b"\0AUTH EXTERNAL "
+                     + binascii.hexlify(str(os.geteuid()).encode()) + b"\r\n")
+        if not _line(sock).startswith(b"OK "):
+            raise OSError("bus rejected authentication")
+        sock.sendall(b"BEGIN\r\n")
+        # A connection is not a bus client until it has said hello; a call sent
+        # first is dropped rather than answered.
+        _send(sock, 1, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+              "org.freedesktop.DBus", "Hello", None)
+        return sock
+    except BaseException:
+        sock.close()
+        raise
+
+
+def call(path, interface, member, text):
+    """True when the bus answered the call with a method return, not an error."""
+    sock = _connect()
+    try:
+        return _send(sock, 2, BUS, path, interface, member, text) == 2
+    finally:
+        sock.close()
+
+
+def send_reply(path, text):
+    """The reply text goes into the message body, never into a process argument."""
+    return call(path, IFACE, "sendReply", text)
 
 
 def properties(path):
@@ -148,8 +319,7 @@ def main():
 
     if verb == "find":
         app = sys.argv[2] if len(sys.argv) > 2 else ""
-        body = sys.argv[3] if len(sys.argv) > 3 else ""
-        note = find(app, body)
+        note = find(app, request().get("body", ""))
         if note:
             json.dump({"path": note["path"], "title": note.get("title", ""),
                        "appName": note.get("appName", "")}, sys.stdout,
@@ -157,35 +327,38 @@ def main():
         return 0
 
     if verb == "reply":
-        path, text = sys.argv[2], sys.argv[3]
-        if not text.strip() or len(text) > 4096 or "\x00" in text:
+        # argv holds only the discovered path and the claimed app. The reply and
+        # the body it answers to arrive on stdin, so this process and its parent
+        # never show message text in /proc.
+        if len(sys.argv) != 4:
             return 1
-        if len(sys.argv) != 6:
+        path, app = sys.argv[2], sys.argv[3]
+        body = request()
+        text = body.get("text", "")
+        if not text.strip() or len(text) > 4096 or "\x00" in text:
             return 1
         demo = bool(re.fullmatch(r"demo:[0-9a-f]{32}", path))
         if not demo and not valid_path(path):
             return 1
         # Re-discover and re-match at send time, including the demo session token.
-        match = find(sys.argv[4], sys.argv[5])
+        match = find(app, body.get("body", ""))
         if not match or match.get("path") != path:
             return 1
         if demo:
-            if normalise(sys.argv[4]) != normalise(DEMO_APP):
+            if normalise(app) != normalise(DEMO_APP):
                 return 1
             write_json(REPLY_LOG, {"created": time.time(), "session": path[5:], "text": text})
             sys.stdout.write("saved the demo reply locally")
             return 0
-        result = subprocess.run(["busctl", "--user", "--", "call", BUS, path, IFACE,
-                                 "sendReply", "s", text],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=5)
-        if result.returncode != 0:
+        if not send_reply(path, text):
             sys.stdout.write("reply failed")
-            return result.returncode
+            return 1
         # Answered means dealt with, on the phone as well. Without this the
         # notification is still live over there, KDE Connect forwards it again,
         # and the card you just replied to reappears a moment later.
         # Best effort: a reply that went through is a success even if the
-        # dismissal does not, and some senders do not offer one.
+        # dismissal does not, and some senders do not offer one. busctl is fine
+        # here: an object path is a discovered identifier, not message text.
         subprocess.run(["busctl", "--user", "--", "call", BUS, path, IFACE, "dismiss"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=5)
         sys.stdout.write("sent")

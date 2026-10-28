@@ -88,7 +88,7 @@ from the unrelated `OmaDisplay` and `axelkalo.agents` plugins).
 
 Not exercised in this pass, and explicitly left untested rather than faked:
 
-- **KDE Connect**: no device paired and no `kdeconnectd`/`kdeconnect-cli` installed on this host. Reply, stale-target, ambiguous-target and failed-target behavior against a real phone remain untested; current coverage is the mocked-bus argv/logic tests only.
+- **KDE Connect**: no device paired and no `kdeconnectd`/`kdeconnect-cli` installed on this host. Reply, stale-target, ambiguous-target and failed-target behavior against a real phone remain untested; current coverage is the mocked-bus logic tests, plus `tests/test_kdeconnect_argv.py`, which starts the real launcher in both helper modes and fails if the message or reply text appears in any `/proc/PID/cmdline`.
 - **Remote-icon opt-in fetch**, an explicit sender action button's D-Bus `ActionInvoked` round trip, and pointer-driven card click / hover — no safe input injection was available, and toggling `fetchRemoteIcons` needs a config change not attempted this pass.
 - **Failure-injection**: Bubblewrap missing, the icon/store helpers failing, or `wl-clipboard` absent were not reproduced live (would mean uninstalling working tooling from this machine); the fail-closed behavior for each is exercised in `tests/security.cjs`/`test_security.py` instead, not on this host.
 

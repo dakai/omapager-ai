@@ -2148,8 +2148,14 @@ Item {
     var job = queue.shift()
     replyQueue = queue
     findProc.job = job
-    findProc.command = [kdeBin, "find", job.source, job.body]
+    // The body is the private text. It goes to the helper on stdin, because a
+    // process argument is readable by every local user through /proc; only the
+    // app name - the thing being matched against - stays in the command.
+    findProc.command = [kdeBin, "find", job.source]
+    findProc.stdinEnabled = true
     findProc.running = true
+    findProc.write(JSON.stringify({ body: job.body }))
+    findProc.stdinEnabled = false
   }
 
   Timer {
@@ -2161,12 +2167,19 @@ Item {
   function sendReply(key, text) {
     var at = rowIndexFor(key)
     if (at < 0) return
-    var path = String(toasts.get(at).replyPath || "")
+    var row = toasts.get(at)
+    var path = String(row.replyPath || "")
     if (!helperSettingsReady || !path || !String(text).trim() || String(text).length > 4096 || replyProc.running) return
     replyProc.running = false
     replyProc.replyKey = key
-    replyProc.command = [kdeBin, "reply", path, String(text), String(toasts.get(at).source), String(toasts.get(at).bodyLine)]
+    // Same rule as the lookup: the reply and the body it answers to are private,
+    // so they travel on stdin. The path is a discovered identifier and the app
+    // name is what the second match compares against.
+    replyProc.command = [kdeBin, "reply", path, String(row.source)]
+    replyProc.stdinEnabled = true
     replyProc.running = true
+    replyProc.write(JSON.stringify({ text: String(text), body: String(row.bodyLine) }))
+    replyProc.stdinEnabled = false
 
   }
 

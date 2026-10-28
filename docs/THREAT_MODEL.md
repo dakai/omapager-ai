@@ -22,7 +22,7 @@ window title does not prove origin.
 | Icon name | Filesystem lookup | Bounded names, no glob/path traversal, approved local roots |
 | Website/redirect/DNS/image | Network and decoder | Opt-in, public pinned address, TLS validation, caps, sandbox |
 | Notification row | Persistent state | Separate sanitisation, private atomic files, bounded retention |
-| Action/reply/clipboard | External side effect | Explicit user action, argv, bounded values, exact reply matching |
+| Action/reply/clipboard | External side effect | Explicit user action, bounded values, exact reply matching; argv holds identifiers only, message and reply text travel on stdin |
 | omarchy-exec-argv hint | Process exec | Screenshot-editor allowlist; separately brokered local-file opening and PID-only crash diagnosis; re-parse on activate; never persisted |
 | Window focus target | Hyprland Lua | Compositor hexadecimal address only |
 | Helper process | HOME/network | Bubblewrap fail-closed profiles |
