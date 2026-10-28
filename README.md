@@ -15,8 +15,8 @@ A notification daemon for [Omarchy](https://omarchy.org) with grouped
 notifications, inline actions and screen-sharing detection. Replaces the built-in
 notification service and follows your Omarchy theme.
 
-> **This is a standalone fork.** [dakai/omapager-ai](https://github.com/dakai/omapager-ai)
-> tracks [njpatel/omapager](https://github.com/njpatel/omapager) and adds a
+> **Omapager AI** is its own project, tracking
+> [njpatel/omapager](https://github.com/njpatel/omapager) and adding a
 > preferences window, an optional model layer for duplicate detection and
 > suggested actions, a local sensitive-text filter, saved-file actions, and
 > verification codes in Chinese, Japanese and Korean text.
