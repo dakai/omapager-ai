@@ -3,9 +3,9 @@
   "id": "dakai.omapager",
   "name": "Omapager",
   "version": "1.2.0",
-  "author": "Neil Jagdish Patel",
+  "author": "Dakai",
   "license": "MIT",
-  "description": "Notifications for Omarchy: a stacking, grouping replacement for the built-in service, with markup parsing, resolved source icons, inline reply, per-source snooze, an optional model layer and a local sensitive-text filter.",
+  "description": "Notifications for Omarchy: stacking, grouping, inline reply, per-source snooze, an optional model layer that merges duplicates and suggests actions, and a local sensitive-text filter. A standalone fork of njpatel/omapager, with its own plugin id.",
   "kinds": [
     "service",
     "bar-widget"
