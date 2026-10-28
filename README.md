@@ -15,12 +15,17 @@ A notification daemon for [Omarchy](https://omarchy.org) with grouped
 notifications, inline actions and screen-sharing detection. Replaces the built-in
 notification service and follows your Omarchy theme.
 
-> **This is a fork.** [dakai/omapager-ai](https://github.com/dakai/omapager-ai)
+> **This is a standalone fork.** [dakai/omapager-ai](https://github.com/dakai/omapager-ai)
 > tracks [njpatel/omapager](https://github.com/njpatel/omapager) and adds a
 > preferences window, an optional model layer for duplicate detection and
 > suggested actions, a local sensitive-text filter, saved-file actions, and
-> verification codes in Chinese, Japanese and Korean text. The plugin id stays
-> `njpatel.omapager`, so it installs over the original.
+> verification codes in Chinese, Japanese and Korean text.
+>
+> It carries its own plugin id, `dakai.omapager`, so it installs beside the
+> original rather than claiming its name. Only one notification daemon can own
+> the bus at a time, so enable one and disable the other. Settings do not carry
+> over between the two ids; the API key does, since the keyring entry is named
+> after the application, not the plugin.
 
 <img src="assets/native-card-2x.png" width="410" alt="Original demo notifications from Slack, WhatsApp and GitHub with their source icons">
 
@@ -125,11 +130,9 @@ step 1, then enable Omapager in step 2.
 The plugin id is unchanged, so this installs over an existing Omapager:
 
 ```bash
-git clone --branch feature/llm-settings https://github.com/dakai/omapager-ai.git \
-  ~/.config/omarchy/plugins/njpatel.omapager
+git clone https://github.com/dakai/omapager-ai.git \
+  ~/.config/omarchy/plugins/dakai.omapager
 ```
-
-`main` on the fork will carry these changes once the branch is merged.
 
 #### Upstream releases via the marketplace
 
@@ -151,7 +154,7 @@ enable Omapager. Only one notification daemon can run at a time.
 ```bash
 omarchy-shell shell rescanPlugins
 omarchy plugin disable omarchy.notifications
-omarchy plugin enable njpatel.omapager --section center --after omarchy.indicators
+omarchy plugin enable dakai.omapager --section center --after omarchy.indicators
 omarchy restart shell
 ```
 
@@ -160,19 +163,19 @@ omarchy restart shell
 For this fork, pull the branch you installed:
 
 ```bash
-git -C ~/.config/omarchy/plugins/njpatel.omapager pull --ff-only
+git -C ~/.config/omarchy/plugins/dakai.omapager pull --ff-only
 omarchy restart shell
 ```
 
-[Release notes](https://github.com/dakai/omapager-ai/blob/feature/llm-settings/RELEASE.md)
+[Release notes](https://github.com/dakai/omapager-ai/blob/main/RELEASE.md)
 describe each update. Do not use `omarchy refresh shell`, which resets your shell
 configuration.
 
 ### Remove Omapager
 
 ```bash
-omarchy plugin disable njpatel.omapager
-omarchy plugin remove njpatel.omapager
+omarchy plugin disable dakai.omapager
+omarchy plugin remove dakai.omapager
 omarchy plugin enable omarchy.notifications
 omarchy restart shell
 ```
@@ -190,7 +193,7 @@ do.
 
 <img src="assets/display-settings-2x.png" width="420" alt="Notification preferences for display, countdown animation and screen-sharing snooze suggestions">
 
-Changes save to the `njpatel.omapager` bar-widget entry in
+Changes save to the `dakai.omapager` bar-widget entry in
 `~/.config/omarchy/shell.json`. You can edit the other options there too.
 `edgeSpacing`, `fetchRemoteIcons` and `requireSandbox` are config-only. Defaults
 below apply to new configurations, not choices you have already saved.
@@ -245,7 +248,7 @@ Add options to the existing widget entry. This example is not a complete
 
 ```json
 {
-  "id": "njpatel.omapager",
+  "id": "dakai.omapager",
   "edgeSpacing": 12,
   "showCountdown": false,
   "fontScale": 100,
@@ -472,6 +475,7 @@ omarchy-shell omapager probe            show runtime configuration and helper st
 omarchy-shell omapager.panel toggle     the panel
 omarchy-shell omapager.panel expand x   open a source's held list, as clicking it would
 omarchy-shell omapager.panel openSettings  notification preferences
+omarchy-shell omapager.panel openPreferences  the model and API key window
 ```
 
 `probe` is the headless source of truth: the deck, the quiet state, the sandbox

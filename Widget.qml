@@ -21,11 +21,11 @@ import qs.Ui
 
 BarWidget {
   id: pager
-  moduleName: "njpatel.omapager"
+  moduleName: "dakai.omapager"
 
   // The daemon, if it is up. Everything that reads it degrades to empty rather
   // than breaking the bar.
-  readonly property var service: bar && bar.shell ? bar.shell.serviceFor("njpatel.omapager") : null
+  readonly property var service: bar && bar.shell ? bar.shell.serviceFor("dakai.omapager") : null
   readonly property bool silenced: service ? service.doNotDisturb : false
   readonly property bool sharingActive: service ? service.sharingActive : false
   readonly property bool sharingOfferPending: service ? service.sharingOfferPending : false
@@ -472,6 +472,13 @@ BarWidget {
     target: "omapager.panel"
     function open(): string { pager.open(); return "open" }
     function openSettings(): string { pager.openSettings(); return "settings" }
+    // The preferences window, without a pointer. The row at the end of the
+    // settings page opens it by click; this is the same thing for a script.
+    function openPreferences(): string {
+      pager.close()
+      pager.openPreferences()
+      return "preferences"
+    }
     // Current notification status for scripts, without opening the panel.
     function line(): string {
       return JSON.stringify({ line: pager.stateLine })

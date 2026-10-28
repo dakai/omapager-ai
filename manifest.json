@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "njpatel.omapager",
+  "id": "dakai.omapager",
   "name": "Omapager",
   "version": "1.2.0",
   "author": "Neil Jagdish Patel",
   "license": "MIT",
-  "description": "Notifications for Omarchy: a stacking, grouping replacement for the built-in service, with markup parsing, resolved source icons, inline reply, and per-source snooze.",
+  "description": "Notifications for Omarchy: a stacking, grouping replacement for the built-in service, with markup parsing, resolved source icons, inline reply, per-source snooze, an optional model layer and a local sensitive-text filter.",
   "kinds": [
     "service",
     "bar-widget"

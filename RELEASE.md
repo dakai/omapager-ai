@@ -24,4 +24,7 @@ Run `omarchy restart shell` after updating. Existing configuration values are pr
 
 The network protections and optional Bubblewrap policy from v1.1.0 are unchanged. The model helper adds one deliberate exception to the helper profiles — it is both networked and bus-connected, because it must reach the provider and the keyring — and that profile is documented in `docs/SANDBOX.md`.
 
-[Changes since v1.1.1](https://github.com/njpatel/omapager/compare/v1.1.1...v1.2.0)
+[Changes since v1.1.1](https://github.com/dakai/omapager-ai/compare/v1.1.1...v1.2.0)
+
+This release carries its own plugin id, `dakai.omapager`. Install it beside the
+original and enable one, or the two will fight over the notification bus.
