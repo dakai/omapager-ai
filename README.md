@@ -133,16 +133,21 @@ step 1, then enable Omapager in step 2.
 
 ### 1. Install
 
-#### This fork, via Git
-
-The plugin id is unchanged, so this installs over an existing Omapager:
+#### This fork
 
 ```bash
-git clone https://github.com/dakai/omapager-ai.git \
-  ~/.config/omarchy/plugins/dakai.omapager
+omarchy plugin add https://github.com/dakai/omapager-ai.git
 ```
 
-#### Upstream releases via the marketplace
+`omarchy plugin add` clones the repository into
+`~/.config/omarchy/plugins/dakai.omapager` for you. It installs the current
+commit until a tagged release is listed.
+
+This fork has its own plugin id, `dakai.omapager`, so it sits beside the
+original rather than replacing it. Only one notification daemon can own the bus;
+see step 2.
+
+#### Upstream releases
 
 Find Omapager in the [Omarchy Plugin Marketplace](https://omarchyplugins.com/)
 and run its install command:
@@ -152,7 +157,6 @@ omarchy plugin add https://github.com/njpatel/omapager.git
 ```
 
 That installs upstream, without the features listed at the top of this file.
-Until a stable release is approved, the marketplace installs Git HEAD.
 
 ### 2. Enable Omapager
 
