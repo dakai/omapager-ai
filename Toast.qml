@@ -106,6 +106,12 @@ Item {
   // Set from the daemon's own setting. With it off - the default - a left click
   // on the card body does nothing, so a mis-click cannot lose a notification.
   property bool activateOnClick: false
+  // ...except where the sender itself declared an action for the card. A
+  // screenshot toast carries the editor to open and a Taildrop card carries the
+  // file it saved; "click it to finish that" is the whole point of those, and
+  // they are the only cards whose click does something the sender asked for.
+  readonly property bool clickActivates: activateOnClick
+                                        || String(row.execArgv || "") !== ""
 
   readonly property var allDeeds: {
     var out = []
@@ -1002,7 +1008,7 @@ Item {
         // worse than having to press the close button. The offers and the
         // sender's actions are all buttons, and those still work.
         if (mouse.button === Qt.MiddleButton) { card.dismissed(); return }
-        if (card.activateOnClick) card.activated()
+        if (card.clickActivates) card.activated()
       }
     }
   }
