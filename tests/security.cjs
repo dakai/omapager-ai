@@ -137,6 +137,7 @@ function newCapacityScope() {
     storeProc: {}, storeBin: '', wantIcon: () => {},
     lookForReply: () => {}, Security: S, Markup: M,
     llmAsk: () => {}, llmDeeds: () => [], llmRevision: 0, llmIntent: false, llmDedupe: false,
+    llmAnswers: {}, llmLast: {},
     allowDefaultActionOnCardClick: false,
     duplicateSimilarity: 0.6,
     writes: [],

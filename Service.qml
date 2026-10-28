@@ -971,8 +971,13 @@ Item {
                 duplicate: answer ? answer.duplicate === true : false,
                 buttons: answer ? (answer.buttons || []).length : 0,
                 hadOther: !!(job && job.other), at: Date.now() }
-    if (!answer || index < 0) { pumpLlm(); return }
-    var row = toasts.get(index)
+    // A card held back because the pointer is over the deck has no model row
+    // yet. Its reservation carries the pending snapshot, and without looking
+    // there the verdict was dropped - the duplicate then reappeared as a second
+    // card the moment the deck collapsed.
+    var reservation = job ? liveKeys[job.key] : null
+    var row = index >= 0 ? toasts.get(index) : (reservation ? reservation.row : null)
+    if (!answer || !row) { pumpLlm(); return }
 
     if (llmDedupe && answer.duplicate === true && similarLiveRow(row) !== "") {
       closeToast(job.key, "duplicate")

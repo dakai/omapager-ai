@@ -53,6 +53,8 @@ verification texts are recognised too (`验证码`, `驗證碼`, `激活码`, `�
 `인증번호` and similar), which need their own matching because CJK has no word
 boundaries for the English keywords to anchor on.
 
+<img src="assets/demo-deck.png" width="410" alt="A Chinese verification SMS from KDE Connect with Copy code and Copy number buttons, and the phone number masked in the title">
+
 <img src="assets/native-actions-2x.png" width="410" alt="Google verification notification with its source icon, Copy code action and compact close button">
 
 **Per-notification actions.** Use app-provided actions such as Mark as read
@@ -85,6 +87,8 @@ snooze the source, remove the row.
 The list is per session: notifications still on screen come back after the
 shell reloads, dismissed ones do not. History is the durable list.
 
+<img src="assets/demo-recent.png" width="410" alt="The panel's Recent list, each row carrying its own buttons: Copy code, Copy number, Open link, Snooze source and Remove">
+
 **Notification history.** Expand History to read up to 100 closed notifications,
 newest first, including messages held while snoozed or silenced. Unlike Recent,
 this list survives shell restarts and refreshes each time the panel opens.
@@ -105,6 +109,8 @@ addresses and phone numbers in a message can be masked on the card, and are
 redacted from history regardless. Set `sensitiveFilter` to `mask` or
 `redact`; the rules run locally and no model is involved.
 
+<img src="assets/demo-sensitive.png" width="410" alt="A notification whose API key and email address are replaced with dots and their kind, while the rest of the sentence stays readable">
+
 **Optional model layer.** Omapager can ask a model to recognise a duplicated
 message from a second source, or to point out an action a card should offer. It
 is off until you choose a provider. Two questions with two kinds of answer: a
@@ -117,6 +123,8 @@ nothing useful. The API key is kept in the desktop keyring, not in `shell.json`.
 File button: Reveal, Properties, Open, or copy the path. A notification surface
 cannot host another application's real context menu; these four are what that
 menu is used for, and `fileManager` picks which application answers.
+
+<img src="assets/demo-saved-file-menu.png" width="410" alt="A saved-file notification with its File menu open, offering Reveal in Files, Properties, Open and Copy path">
 
 ## Install
 
@@ -192,6 +200,10 @@ settings that need room - provider, endpoint, model, key, and what the model may
 do.
 
 <img src="assets/display-settings-2x.png" width="420" alt="Notification preferences for display, countdown animation and screen-sharing snooze suggestions">
+
+The window behind the last row on that page, for the settings that do not fit:
+
+<img src="assets/demo-preferences.png" width="560" alt="The preferences window: provider, endpoint and model, the API key kept in the keyring, and the two things the model may do">
 
 Changes save to the `dakai.omapager` bar-widget entry in
 `~/.config/omarchy/shell.json`. You can edit the other options there too.
@@ -276,6 +288,8 @@ in a mail or chat bridge. Two stages:
 
 Critical notifications are never merged, and a source is never compared against
 itself - one app talking twice is that app talking twice.
+
+<img src="assets/demo-duplicate.png" width="410" alt="One notification card where two arrived: the same Hermes message from Fork Client and from Forkgram Desktop, merged after Jev scored them as one event">
 
 **Suggested actions.** The model may point out a code, link, phone number or
 file the card should offer. A suggestion is accepted only when its value appears
@@ -402,6 +416,8 @@ waiting. Hover the centre of the bar to reveal it at other times.
 Grey rather than red for Do Not Disturb: silencing is a decision, not a fault,
 and the slashed bell already says "off". The ordinary state is a plain bell at
 full strength, so a working desktop never looks switched off.
+
+<img src="assets/demo-bar-states.png" width="420" alt="The bar icon in its two states: a plain bell when notifications are on, a slashed grey bell for Do Not Disturb">
 
 Left-click the bell to silence or resume notifications. Right-click to open the
 panel for Recent, History, held messages and snooze controls. `swapMouseButtons`
