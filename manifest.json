@@ -5,7 +5,7 @@
   "version": "1.2.0",
   "author": "Dakai",
   "license": "MIT",
-  "description": "Notifications for Omarchy: stacking, grouping, inline reply, per-source snooze, an optional model layer that merges duplicates and suggests actions, and a local sensitive-text filter. A standalone fork of njpatel/omapager, with its own plugin id.",
+  "description": "Notifications for Omarchy with an optional model layer that merges duplicates and suggests actions, plus a local sensitive-text filter, grouping, inline reply and per-source snooze.",
   "kinds": [
     "service",
     "bar-widget"
