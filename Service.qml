@@ -852,14 +852,22 @@ Item {
 
   // The text the model is allowed to see: already through the display filter,
   // so a request can never carry a credential the screen was told to hide.
+  //
+  // The filter is applied here rather than at the call site because this is the
+  // boundary where text leaves the machine, and `handleNotification` passes the
+  // raw row - the unfiltered copy is what the store and the duplicate check
+  // compare, so it is the only row that is right for them. For a while only the
+  // card was filtered and a remote provider still received the credential; the
+  // filter now runs on the payload itself.
   function llmAsk(row) {
     if (!llmAvailable()) return
     var key = String(row.key || "")
     if (!key) return
+    var safe = Store.filterSensitive(row, sensitiveFilter)
     llmQueue = llmQueue.filter(function (job) { return job.key !== key })
     if (llmQueue.length >= llmQueueLimit) return
-    llmQueue.push({ key: key, summary: String(row.summary || ""),
-                    body: String(row.body || row.bodyLine || ""),
+    llmQueue.push({ key: key, summary: String(safe.summary || ""),
+                    body: String(safe.body || safe.bodyLine || ""),
                     groupKey: String(row.groupKey || ""),
                     other: closestLiveRow(row) })
     pumpLlm()
@@ -888,8 +896,12 @@ Item {
       if (score > bestScore) { bestScore = score; best = other }
     }
     if (!best) return null
-    return { summary: String(best.summary || ""),
-             body: String(best.body || best.bodyLine || "") }
+    // Live rows are the display copies, but the comparison is sent to the model
+    // too, so it gets the same filter: reading the queue must not be able to
+    // depend on which of the two rows a credential happened to land in.
+    var safe = Store.filterSensitive(best, sensitiveFilter)
+    return { summary: String(safe.summary || ""),
+             body: String(safe.body || safe.bodyLine || "") }
   }
 
   function pumpLlm() {
@@ -2254,10 +2266,16 @@ Item {
     var args = ["wl-copy"]
     if (sensitive) args.push("--sensitive")
     args.push("--")
-    args.push(value)
     clipProc.running = false
     clipProc.command = args
+    // The text is written to wl-copy's stdin, never as an argument. A copied
+    // code is short-lived, but a process argument is visible to every local
+    // user while it lives -- and --sensitive only marks the clipboard for the
+    // history manager, it does not hide anything in /proc.
+    clipProc.stdinEnabled = true
     clipProc.running = true
+    clipProc.write(value)
+    clipProc.stdinEnabled = false
     if (sensitive) { secretHeld = value; secretLife.restart() }
   }
 

@@ -160,7 +160,15 @@ why it is a filter and not a boundary.
 
 **The model layer.** `bin/omapager-llm` asks an OpenAI-compatible endpoint one
 question per notification, after the card is already on screen. It is off until
-a provider is chosen. What comes back is advice:
+a provider is chosen. This is the only path that sends notification text off the
+machine, so the payload itself is filtered: `llmAsk` applies
+`Store.filterSensitive(row, sensitiveFilter)` to the text it queues and the same
+filter to the comparison row before either reaches the helper. The card is not
+the control — `handleNotification` deliberately keeps an unfiltered row for the
+store and the duplicate check, and passing that row to the model was a gap
+between this document and the code. `sensitiveFilter: "off"` still sends the
+text unfiltered; that is the documented opt-out, not an oversight.
+What comes back is advice:
 
 - A suggested button is accepted only if its value appears verbatim in the text
   the card is already showing, and then re-validates through the same checks the
@@ -174,6 +182,12 @@ a provider is chosen. What comes back is advice:
 A prompt injected through a notification body can therefore make a card offer
 nothing useful. It cannot mint a capability, and it cannot reach a URL, a path or
 a command the notification did not already contain.
+
+**Copied codes.** A verification code reaches the clipboard through
+`wl-copy --sensitive` with the value on stdin, not as an argument: `--sensitive`
+marks the clipboard so Omarchy's history capture skips it, and never hid anything
+in `/proc`. The service still remembers the value for `clipboardTimeout` and
+clears the clipboard only if it is unchanged, so a later copy is not taken away.
 
 **The key.** It lives in the desktop keyring through `bin/omapager-secret`
 (libsecret). It is never in `shell.json`, never in `~/.local/state/…`, never in

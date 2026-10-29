@@ -22,11 +22,11 @@ window title does not prove origin.
 | Icon name | Filesystem lookup | Bounded names, no glob/path traversal, approved local roots |
 | Website/redirect/DNS/image | Network and decoder | Opt-in, public pinned address, TLS validation, caps, sandbox |
 | Notification row | Persistent state | Separate sanitisation, private atomic files, bounded retention |
-| Action/reply/clipboard | External side effect | Explicit user action, bounded values, exact reply matching; argv holds identifiers only, message and reply text travel on stdin |
+| Action/reply/clipboard | External side effect | Explicit user action, bounded values, exact reply matching; argv holds identifiers only, while message text, reply text and the copied value travel on stdin (`wl-copy --sensitive` still marks the clipboard) |
 | omarchy-exec-argv hint | Process exec | Screenshot-editor allowlist; separately brokered local-file opening and PID-only crash diagnosis; re-parse on activate; never persisted |
 | Window focus target | Hyprland Lua | Compositor hexadecimal address only |
 | Helper process | HOME/network | Bubblewrap fail-closed profiles |
-| Message text | Model advice | Suggestion must quote the row's own text and re-validate; no new capability |
+| Message text | Model advice | Display filter applied to the outbound payload, including the comparison row; suggestion must quote the row's own text and re-validate; no new capability |
 | API key | Credential | Desktop keyring only; never in config, state, argv or logs |
 | Model endpoint | Network egress | Settings only, never notification text; pinned https, redirects refused, loopback literal |
 | GitHub PR | CI token/tools | SHA-pinned actions, read-only default, no secrets or privileged PR trigger |

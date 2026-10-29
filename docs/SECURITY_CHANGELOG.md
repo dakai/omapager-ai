@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Filter the model payload, not just the card. `llmAsk` now runs
+  `Store.filterSensitive` over the row it queues and over the comparison row, so
+  a remote provider cannot receive a credential the display filter was told to
+  hide. The README already documented this boundary; the code did not implement
+  it. With the filter set to "off" the payload stays unfiltered, as documented.
+- Copy a code without putting it in an argument. The value goes to `wl-copy`
+  stdin instead of `wl-copy --sensitive -- <code>`; `--sensitive` marks the
+  clipboard for the history manager and never hid anything in `/proc`.
 - Keep KDE Connect message and reply text out of process arguments. Lookups and
   replies now reach `bin/omapager-kdeconnect` on stdin, and `sendReply` is sent
   over the session-bus socket instead of through `busctl`, so neither the

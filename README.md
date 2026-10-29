@@ -577,7 +577,10 @@ and it does nothing until a provider is chosen.
 
 - **What is sent.** The summary and body of a notification, after the display
   filter has run, so a credential the card was told to mask is not in the
-  request. Nothing else: no history, no images, no other notifications.
+  request. The comparison notification sent with a duplicate question is filtered
+  the same way. Formatting is applied to the request itself, not to the card, so
+  it holds for the payload that actually leaves. Nothing else: no history, no
+  images, no other notifications.
 - **Where it goes.** The provider you configured. Local presets (`ollama`,
   `lmstudio`, `llamacpp`) talk to `127.0.0.1` or `::1` over plain `http` and
   never leave the machine. Remote endpoints are `https` on port 443.

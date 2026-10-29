@@ -1151,4 +1151,47 @@ for (const u of ['https://example.com/', 'https://sub.example.co.uk/', 'https://
     for(const part of argv) assert.ok(!part.includes('PRIVATE-'),'private text reached argv: '+part);
 }
 
+// A copied verification code must not sit in wl-copy's argv: --sensitive marks
+// the clipboard for the history manager, it does not hide a process argument.
+{
+  const code='483920';
+  const writes=[];
+  const proc={running:false,stdinEnabled:false,command:[],write(v){writes.push(String(v));}};
+  const scope={hasWlCopy:true,clipProc:proc,secretHeld:'',secretLife:{restart(){}}};
+  vm.createContext(scope);
+  vm.runInContext(extract(source,'function copyText(text, sensitive)','  Timer {'),scope);
+  scope.copyText(code,true);
+  assert.equal(proc.command.join(' '),'wl-copy --sensitive --');
+  for(const part of proc.command) assert.ok(!part.includes(code),'code reached argv: '+part);
+  assert.equal(writes[0],code,'the code must reach stdin');
+  assert.equal(scope.secretHeld,code,'sensitive handling still applies');
+}
+
+// The model layer is the only thing that sends notification text off the
+// machine, so the payload itself carries the filter rather than the card.
+{
+  const credential='sk-ant-'+'a'.repeat(30);
+  const row={key:'k1',summary:'Invoice',body:'the key is '+credential,groupKey:'g1'};
+  const other={key:'k2',summary:'Invoice',body:'the key is '+credential,groupKey:'g2'};
+  const scope={
+    sensitiveFilter:'mask',llmQueue:[],llmQueueLimit:8,llmContextSimilarity:0.35,
+    toasts:{count:1,get(){return other;}},leaving:{},Markup:M,Store,
+    pumpLlm(){},llmAvailable(){return true;}
+  };
+  vm.createContext(scope);
+  vm.runInContext(extract(source,'function llmAsk(row)','// The one card worth comparing')+'\n'+
+                  extract(source,'function closestLiveRow(row)','function pumpLlm()'),scope);
+  scope.llmAsk(row);
+  assert.equal(scope.llmQueue.length,1);
+  const job=scope.llmQueue[0];
+  assert.ok(!job.summary.includes(credential),'summary reached the request');
+  assert.ok(!job.body.includes(credential),'body reached the request');
+  assert.ok(job.other,'the comparison row must be queued for this to prove anything');
+  assert.ok(!job.other.body.includes(credential),'comparison row reached the request');
+  // "off" is still off: opting out of the filter is the documented behaviour.
+  scope.sensitiveFilter='off';scope.llmQueue=[];
+  scope.llmAsk(row);
+  assert.ok(scope.llmQueue[0].body.includes(credential));
+}
+
 console.log('security JS: passed');
