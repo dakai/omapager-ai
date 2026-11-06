@@ -435,8 +435,8 @@ Omarchy's existing comma-key shortcuts work without configuration:
 | --- | --- |
 | `SUPER` `,` | dismiss the newest notification |
 | `SUPER` `SHIFT` `,` | dismiss the whole stack the newest one is in (or the one you have open) |
-| `SUPER` `CTRL` `,` | toggle silencing |
-| `SUPER` `ALT` `,` | invoke the newest one, as clicking it would |
+| `SUPER` `CTRL` `,` | no card keyboard mode (answers `none`) |
+| `SUPER` `ALT` `,` | dismiss the newest notification |
 | `SUPER` `SHIFT` `ALT` `,` | put the last few back on screen |
 
 Omarchy screenshot toasts carry `omarchy-exec-argv`. Clicking such a card, or

@@ -498,6 +498,25 @@ function newCapacityScope() {
   for (const sender of senders) assert.equal(sender.closeAttempts, 1);
 }
 
+{ // SUPER+, runs `act`, which the stock shell sends and the shim must answer.
+  const s = newCapacityScope();
+  vm.runInContext(extract(source, 'function act(): string', 'function keyboard(): string')
+    .replace('(): string', '()'), s);
+  assert.equal(s.act(), 'none', 'an empty model answers none');
+  const senders = [1, 2, 3].map(id => s.fakeNotification(id));
+  for (const sender of senders) s.handleNotification(sender);
+  s.drainCallLater();
+  const keys = s.toasts.rows.map(row => row.key);
+  for (const key of keys) {
+    assert.equal(s.act(), 'ok');
+    assert.equal(s.leaving[key], 'dismissed', 'each press dismisses the newest live card');
+  }
+  assert.equal(s.act(), 'none', 'departing cards are not dismissed twice');
+  for (const key of keys) s.finishClose(key, 'dismissed');
+  assert.equal(s.toasts.count, 0);
+  for (const sender of senders) assert.equal(sender.dismissals, 1);
+}
+
 { // Dismiss the visible deck, including across mode changes and exit animations.
   const Layout = load('Layout');
   function fixture(stacking, expanded, openDeck) {

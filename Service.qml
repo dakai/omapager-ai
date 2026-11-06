@@ -2674,6 +2674,27 @@ Item {
       return "ok"
     }
 
+    // Stock SUPER+, ("Dismiss, invoke, or focus last notification").
+    // The built-in service gained this after the shim was written, so the key
+    // answers "Function not found" and does nothing. Omapager answers it the
+    // way its own SUPER+, row reads: the newest live card is dismissed.
+    function act(): string {
+      for (var i = 0; i < toasts.count; i++) {
+        var key = String(toasts.get(i).key)
+        if (service.leaving[key]) continue
+        service.closeToast(key, "dismissed")
+        return "ok"
+      }
+      return "none"
+    }
+
+    // Stock SUPER+CTRL+, ("Control notifications with the keyboard").
+    // Omapager cards have no keyboard mode, so this answers instead of
+    // failing. Keyboard navigation lives in the panel.
+    function keyboard(): string { return "none" }
+
+    function count(): string { return String(toasts.count) }
+
     function showHistory(): string { service.replayHistory(); return "ok" }
 
     // Forgets what was recorded. What is on screen stays where it is.
