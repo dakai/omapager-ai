@@ -186,6 +186,33 @@ class Storage(unittest.TestCase):
                     path = state/('history' if mode == 'legacy-history' else 'live')/name
                     self.assertEqual(json.loads(path.read_text()), clean)
                     self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+    def test_model_deeds_need_their_text(self):
+        entry = {'key': 'deed', 'summary': 'Deploy failed',
+                 'body': 'See https://example.com/build/7 for logs'}
+        self.assertEqual(self.run_store('put', payload=entry).returncode, 0)
+        payload = {'deeds': [{'kind': 'link', 'value': 'https://example.com/build/7'},
+                             {'kind': 'link', 'value': 'https://evil.example/x'}]}
+        self.assertEqual(self.run_store('deeds', 'deed', payload=payload).returncode, 0)
+        live = json.loads(self.run_store('restore').stdout)[0]
+        kept = [{'kind': 'link', 'value': 'https://example.com/build/7'}]
+        self.assertEqual(json.loads(live['deeds']), kept)
+        # An icon write-back carries a row snapshot from before the answer; it
+        # must not drop the suggestions already stored for the key.
+        self.assertEqual(self.run_store('put', payload=dict(entry, stored_image='/tmp/x.png')).returncode, 0)
+        live = json.loads(self.run_store('restore').stdout)[0]
+        self.assertEqual(json.loads(live['deeds']), kept)
+        self.assertEqual(self.run_store('close', 'deed', 'done').returncode, 0)
+        history = json.loads(self.run_store('history').stdout)
+        self.assertEqual(json.loads(history[0]['deeds']), kept)
+    def test_model_deeds_cannot_resurrect_a_redacted_code(self):
+        entry = {'key': 'code', 'summary': 'Verification', 'body': 'Your code is 938271'}
+        self.assertEqual(self.run_store('put', payload=entry).returncode, 0)
+        payload = {'deeds': [{'kind': 'code', 'value': '938271'}]}
+        self.assertEqual(self.run_store('deeds', 'code', payload=payload).returncode, 0)
+        self.assertEqual(self.run_store('close', 'code', 'done').returncode, 0)
+        history = self.home/'.local/state/omarchy/omapager/history'
+        for path in history.glob('*.json'):
+            self.assertNotIn('938271', path.read_text())
 
 class Network(unittest.TestCase):
     def test_destinations(self):

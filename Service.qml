@@ -586,12 +586,20 @@ Item {
         source: String(offers.source || offers.app || "Notification").slice(0, 120),
         summary: String(offers.summary || "").slice(0, 240),
         bodyLine: String(offers.bodyLine || "").slice(0, 1000),
+        // Only for re-checking a model's suggestion: it has to prove its value
+        // is still in the message, and a suggestion can point past what the
+        // one-line preview kept. Bounded well below the entry's own limit.
+        body: String(offers.body || "").slice(0, 8192),
         ts: Number(row.ts),
         codes: String(row.codes || row.code || ""),
         link: String(row.link || ""),
         meeting: row.meeting === true,
         phone: String(row.phone || ""),
         groupKey: String(row.groupKey || ""),
+        // The model's accepted suggestions travel with the snapshot. This is
+        // usually empty: the snapshot is taken on arrival, before the answer,
+        // and annotateRecent() fills it in. A restored row already has them.
+        deeds: String(offers.deeds || row.deeds || ""),
         urgency: Number(row.urgency || 1)
       })
     }
@@ -603,6 +611,22 @@ Item {
     recentRows = rows
   }
 
+  // The Recent snapshot is taken when the notification arrives, before the
+  // model answers. Put the answer into that snapshot too, or the panel's Recent
+  // list would keep the buttonless version of a card that had them.
+  function annotateRecent(key, deeds) {
+    var wanted = String(key || ""), next = recentRows.slice(), changed = false
+    for (var i = 0; i < next.length; i++) {
+      if (String(next[i].key) !== wanted) continue
+      var copy = {}
+      for (var field in next[i]) copy[field] = next[i][field]
+      copy.deeds = deeds
+      next[i] = copy
+      changed = true
+    }
+    if (changed) recentRows = next
+  }
+
   // Acting on a recent row. The card is gone by definition - that is what
   // "recent" means - so the value is re-checked against the stored row rather
   // than against a live model, and only then used. Same rule as takeOffer: a
@@ -611,8 +635,22 @@ Item {
     var wanted = String(key || ""), row = null
     for (var i = 0; i < recentRows.length; i++)
       if (String(recentRows[i].key) === wanted) { row = recentRows[i]; break }
+    // History rows are the same kind of thing, just read from disk. A button
+    // on one has to be acted on by the same checks as a button on Recent.
+    if (!row) for (var h = 0; h < historyRows.length; h++)
+      if (String(historyRows[h].key) === wanted) { row = historyRows[h]; break }
     if (!row) return false
     var offered = String(value || "")
+    // An accepted model suggestion. Re-derived from the row now, not trusted
+    // because it was once offered: the stored text is the authority, and the
+    // question may have been switched off since.
+    var deeds = Store.deedsFor(row)
+    for (var d = 0; d < deeds.length; d++) {
+      if (String(deeds[d].kind) !== kind || String(deeds[d].value) !== offered) continue
+      if (kind === "code") { copyText(offered, true); return true }
+      if (kind === "phone") { copyText(offered, false); return true }
+      return Security.openExternalUrl(offered)
+    }
     if (kind === "code") {
       if (!/^[ A-Za-z0-9_-]{1,64}$/.test(offered)) return false
       if (String(row.codes || "").split(" ").indexOf(offered) < 0) return false
@@ -1005,7 +1043,29 @@ Item {
         var suggestion = llmSuggestion(row, buttons[i], text_)
         if (suggestion) offered.push(suggestion)
       }
-      if (offered.length) { llmAnswers[job.key] = offered; llmRevision += 1 }
+      // Only what the entry can still justify is written down. A `file` deed is
+      // a live capability - the path has to be checked against the row and the
+      // filesystem at the moment of use - and history has no sender to hand it
+      // to, so it stays on the card.
+      var stored = []
+      for (var s = 0; s < offered.length; s++) {
+        if (offered[s].kind === "file") continue
+        stored.push({ kind: offered[s].kind, value: String(offered[s].raw || offered[s].value) })
+      }
+      var encoded = JSON.stringify(stored)
+      // The buttons belong to the notification, not to this session: a card
+      // expires, the entry does not. Put them on the row so a restored card
+      // draws them, and in the store so Recent and History still have them.
+      if (index >= 0) toasts.setProperty(index, "deeds", encoded)
+      if (reservation && reservation.row) reservation.row.deeds = encoded
+      annotateRecent(job.key, encoded)
+      var previous = llmAnswers[job.key] || []
+      llmAnswers[job.key] = offered
+      llmRevision += 1
+      // A later answer may have no suggestions; write the empty list so a
+      // stale button from the version before it cannot survive.
+      if (stored.length || previous.length)
+        Store.write(storeProc, storeBin, "deeds", { deeds: stored }, [job.key])
     }
     pumpLlm()
   }
@@ -1023,7 +1083,10 @@ Item {
     case "link":
       var url = Security.safeHttpUrl(value)
       if (!url) return null
-      return { kind: row.meeting ? "meeting" : "link", label: "Open link", value: url }
+      // `raw` is what the model quoted and what the stored entry still
+      // contains; `value` is what a press may open. Keeping both means a
+      // restored row can prove the URL is still in its text.
+      return { kind: row.meeting ? "meeting" : "link", label: "Open link", value: url, raw: value }
     case "code":
       if (!/^[A-Za-z0-9-]{4,32}$/.test(value)) return null
       return { kind: "code", label: "Copy " + value, value: value }
@@ -1037,10 +1100,13 @@ Item {
     return null
   }
 
-  function llmDeeds(key) {
-    if (!llmIntent) return []
-    var answer = llmAnswers[String(key || "")]
-    return answer ? answer : []
+  // What the model offered for a row. The answer is written onto the row when
+  // it arrives, so this reads the same field whether the card is still on
+  // screen, was restored after a restart, or came back from history. `llmIntent`
+  // gates it: turning the question off also hides answers already on disk.
+  function llmDeeds(row) {
+    if (!llmIntent || !row) return []
+    return Store.deedsFor(row)
   }
 
   // How alike two messages have to be before the model's "duplicate" verdict is
@@ -2314,7 +2380,18 @@ Item {
       // Only a code this row actually carries. A button may not act on a value
       // the notification did not contain, even though the button is ours.
       var index = rowIndexFor(String(key || ""))
-      if (index < 0 || String(toasts.get(index).codes).split(" ").indexOf(String(value)) < 0) return
+      if (index < 0) return
+      var live = toasts.get(index)
+      var known = String(live.codes).split(" ").indexOf(String(value)) >= 0
+      if (!known) {
+        // A model suggestion is by definition absent from `codes` - it only
+        // offers what the detectors missed. Accept it if it is one of the
+        // deeds this row still justifies; the same check runs for history.
+        var approved = Store.deedsFor(live)
+        for (var d = 0; d < approved.length; d++)
+          if (approved[d].kind === "code" && String(approved[d].value) === String(value)) { known = true; break }
+      }
+      if (!known) return
       copyText(value, true)
     }
     else if (kind === "phone") copyText(value, false)
@@ -2951,7 +3028,7 @@ Item {
             showCountdown: service.showCountdown
             actionsAlign: service.actionsAlign
             activateOnClick: service.allowDefaultActionOnCardClick
-            llmDeeds: { service.llmRevision; return service.llmDeeds(model.key) }
+            llmDeeds: { service.llmRevision; return service.llmDeeds(model) }
             replyError: service.replyingKey === model.key ? service.replyError : ""
             replying: service.replyingKey === model.key
             onReplyRequested: {

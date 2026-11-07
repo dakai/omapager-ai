@@ -99,7 +99,7 @@ const capacitySource = [
   extract(source, 'function wantSenderImage(row)', '\n  Process {'),
   extract(source, 'function nextKey()', '// ------------------------------------------------------------- arrival'),
   extract(source, 'function handleNotification(notification)', '// Qt.callLater: mutating the model'),
-  extract(source, 'function llmSuggestion(row, want, text)', 'function llmDeeds(key)'),
+  extract(source, 'function llmSuggestion(row, want, text)', 'function llmDeeds(row)'),
   extract(source, 'function similarLiveRow(row)', '// ------------------------------------------------------------- icons'),
   extract(source, 'function showRow(row)', "// Let go of the sender's object"),
   extract(source, 'function release(key, reason)', '// ------------------------------------------------------------- departure'),
@@ -121,7 +121,7 @@ function newCapacityScope() {
     toasts, refs: {}, refsRevision: 0, keySeed: 0, liveKeys: Object.create(null),
     maxLiveNotifications: 100, heights: {}, leaving: {}, layoutRevision: 0,
     replyingKey: '', held: [], doNotDisturb: false, globalSnoozeUntil: 0,
-    recentRows: [], recentLimit: 20,
+    recentRows: [], recentLimit: 20, historyRows: [],
     senderImageQueue: [], senderImageRevision: 0, helperSettingsReady: false,
     configuredDisplayName: 'fixture-display', deckDisplayName: '',
     fullscreenAway: false, fullscreenScope: '', hyprRevision: 0,
@@ -653,6 +653,26 @@ function newCapacityScope() {
   // Remove is local to the reading list and touches nothing else.
   assert.equal(s.recentOffer('forget', '', 'r1'), true);
   assert.equal(s.recentRows.length, 0, 'the row is dropped from Recent');
+}
+
+{ // A model suggestion is acted on from Recent or History only after the same
+  // check that guards the card: the value must still be in the row's text.
+  const s = newCapacityScope();
+  const copied = [];
+  s.copyText = (value, sensitive) => copied.push({ value: value, sensitive: sensitive });
+  s.Security = { openExternalUrl: url => { copied.push({ opened: url }); return true } };
+  s.historyRows = [{ key: 'h1', summary: 'Reference',
+                     body: 'Quote A9F3K2 at https://b.example/x',
+                     deeds: JSON.stringify([{ kind: 'code', value: 'A9F3K2' },
+                                            { kind: 'link', value: 'https://b.example/x' }]) }];
+  assert.equal(s.recentOffer('code', 'A9F3K2', 'h1'), true);
+  assert.equal(copied[0].sensitive, true, 'a suggested code is copied as a secret');
+  assert.equal(s.recentOffer('link', 'https://b.example/x', 'h1'), true);
+  assert.equal(copied[1].opened, 'https://b.example/x');
+  assert.equal(s.recentOffer('code', '000000', 'h1'), false, 'a value it does not carry is refused');
+  // A hand-edited entry cannot keep a suggestion its text no longer supports.
+  s.historyRows[0].body = 'nothing here';
+  assert.equal(s.recentOffer('code', 'A9F3K2', 'h1'), false);
 }
 
 { // Full quiet hides the entire recent list and held arrivals never backfill it.

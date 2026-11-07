@@ -121,6 +121,9 @@ var SHAPE = {
   bodyRich: "", bodyLine: "", rawBody: "", source: "", groupKey: "", image: "",
   code: "", codes: "", link: "", meeting: false, phone: "", replyPath: "", replyTo: "",
   filePath: "",
+  // The model's accepted suggestions, as a JSON string. A row role must exist
+  // here or the first row fixes the ListModel without it.
+  deeds: "",
   stored_image: "", urgency: 1, expireTimeout: 0, duration: 0, ts: 0,
   restored: false
 }
@@ -143,8 +146,11 @@ function normalise(row) {
   out.summary = out.summary.slice(0, Security.MAX_SUMMARY)
   out.source = out.source.slice(0, Security.MAX_SOURCE)
   out.appIcon = /^[a-zA-Z0-9_.-]{1,256}$/.test(out.appIcon) ? out.appIcon : ""
-  out.link = Security.safeHttpUrl(out.link)
-  out.phone = out.phone.slice(0, Security.MAX_PHONE)
+  out.link = Security.safeHttpUrl(out.link);
+  out.phone = out.phone.slice(0, Security.MAX_PHONE);
+  // Bounded here as well as in the store: this file is state, so an entry from
+  // an older or hand-edited build is still untrusted input.
+  out.deeds = out.deeds.slice(0, 8192);
   out.codes = out.codes.split(" ").slice(0, Security.MAX_CODES).join(" ")
   // qsimage holds in-process pixels. An icon-scheme absolute path is only
   // a pending helper input; retaining it does not authorise Qt to open it.
@@ -182,6 +188,70 @@ function restored(entry) {
   row.duration = row.urgency === 2 ? 0 : RESTORE_GRACE
   row.restored = true
   return row
+}
+
+// ---------------------------------------------------------------- model deeds
+// A suggestion the model made and the daemon accepted while the card was live.
+// Only kind and value travel: the label is ours to regenerate, and the value
+// was quoted from the notification text, so the entry itself stays the
+// authority. Nothing here trusts the file - it can be edited between runs, and
+// the model's answer was a suggestion in the first place.
+
+var MAX_DEEDS = 8
+var MAX_DEED_VALUE = 2048
+var DEED_KINDS = ["link", "meeting", "code", "phone"]
+
+function parseDeeds(text) {
+  var list
+  try { list = JSON.parse(String(text || "[]")) } catch (e) { return [] }
+  if (!Array.isArray(list)) return []
+  var out = []
+  for (var i = 0; i < list.length && out.length < MAX_DEEDS; i++) {
+    var item = list[i]
+    if (!item || typeof item.kind !== "string" || typeof item.value !== "string") continue
+    out.push({ kind: item.kind, value: item.value })
+  }
+  return out
+}
+
+// The deeds a row can still offer, checked against the row as it exists now.
+// Returns an empty list rather than a partial one when nothing survives.
+function deedsFor(row) {
+  if (!row) return []
+  var raw = parseDeeds(row.deeds)
+  if (!raw.length) return []
+  // The stored text is the authority: a button may only carry a value that is
+  // still in the notification. `rawBody` covers a lifted source line, `body`
+  // the text the card drew; a redacted entry has neither and keeps nothing.
+  var text = String(row.summary || "") + "\n" + String(row.body || "")
+             + "\n" + String(row.rawBody || "")
+  var codes = String(row.codes || "").split(" ")
+  var out = []
+  for (var i = 0; i < raw.length; i++) {
+    var kind = raw[i].kind, value = raw[i].value
+    if (DEED_KINDS.indexOf(kind) < 0) continue
+    if (!value || value.length > MAX_DEED_VALUE) continue
+    if (/[\u0000-\u001f\u007f]/.test(value)) continue
+    if (text.indexOf(value) < 0) continue
+    // Skip what today's detectors already offer, so a rule change cannot draw
+    // the same action twice.
+    if (kind === "code") {
+      if (!/^[A-Za-z0-9-]{4,32}$/.test(value)) continue
+      if (codes.indexOf(value) >= 0) continue
+      out.push({ kind: "code", value: value, label: "Copy " + value })
+    } else if (kind === "phone") {
+      if (!/^[+0-9][0-9 ().-]{6,30}$/.test(value)) continue
+      if (String(row.phone || "") === value) continue
+      out.push({ kind: "phone", value: value, label: "Copy number" })
+    } else {
+      var url = Security.safeHttpUrl(value)
+      if (!url) continue
+      if (String(row.link || "") === url) continue
+      out.push({ kind: row.meeting ? "meeting" : "link", value: url,
+                 label: row.meeting ? "Join" : "Open link" })
+    }
+  }
+  return out
 }
 
 function parseList(text) {

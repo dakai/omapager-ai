@@ -83,7 +83,7 @@ the panel's Held Back section.
 **Recent notifications.** Review recently dismissed or expired notifications
 by expanding Recent in the panel, or keep it open with `alwaysShowRecent`.
 Each row keeps the offers its card had - copy a code, open a link, copy a number,
-snooze the source, remove the row.
+snooze the source, remove the row - including any the model suggested.
 The list is per session: notifications still on screen come back after the
 shell reloads, dismissed ones do not. History is the durable list.
 
@@ -94,7 +94,9 @@ newest first, including messages held while snoozed or silenced. Unlike Recent,
 this list survives shell restarts and refreshes each time the panel opens.
 Click a card to expand its message, then scroll to read the rest. `historyHours`
 controls retention; `0` disables disk history. Detected verification codes stay
-redacted.
+redacted. A button the model suggested is kept with the entry and reappears
+here, but only while the text it quoted survived into the stored message, and
+its value is checked again when pressed.
 
 <img src="assets/native-panel-2x.png" width="420" alt="The notification panel with History expanded: redacted verification notifications beside a Slack deploy message, and the Fork Client notification it replaces">
 
@@ -252,7 +254,7 @@ below apply to new configurations, not choices you have already saved.
 | `llmDedupe` | `true` | Show one card when the same message arrives from two sources. Identical text is merged either way; this also merges wording that differs but means the same. |
 | `llmDedupeModel` | empty | A second, cheaper model used only for the duplicate question. Empty uses the model above. A small or flash model is enough: the answer is one boolean. |
 | `llmDedupeApi` | `chat` | `chat` sends both notifications to a chat model and reads a JSON reply. `systemone` sends one yes/no question to a System One model such as Jev (`group/jev` at Magpie), which answers with a probability: faster, cheaper, and nothing to parse. A card is merged at 0.7 or above. |
-| `llmIntent` | `true` | Let the model point out a code, link, phone number or file the card should offer. A suggestion must point at text the notification already contains. |
+| `llmIntent` | `true` | Let the model point out a code, link, phone number or file the card should offer. A suggestion must point at text the notification already contains. Accepted suggestions are kept with the notification, so Recent and History still show them after the card is gone; the value is checked again against the stored text before it is used. A `file` suggestion is not carried into Recent or History. |
 
 The API key is not a `shell.json` option and cannot be set there. Choose a
 provider, then open the preferences window and paste the key: it goes to the
@@ -591,7 +593,10 @@ and it does nothing until a provider is chosen.
   because following one would carry the Authorization header to a host you did
   not choose.
 - **What it can do.** Return advice that is re-checked locally. It cannot open a
-  URL, run a command or dismiss a notification by itself.
+  URL, run a command or dismiss a notification by itself. An accepted suggestion
+  is stored as a kind and a value only, and only while the notification's own
+  text still contains that value; a redacted entry keeps none. The stored value
+  goes through the same validators again when it is pressed.
 - **When it fails.** Requests are abandoned after 20 seconds, one at a time, and
   the feature switches itself off for that notification. A card is never held
   back waiting for a model.

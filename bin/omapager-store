@@ -2,6 +2,7 @@
 # omapager-store - the notification store, driven from Service.qml.
 #
 #   put              read one notification JSON on stdin, write it to live/
+#   deeds KEY        read {"deeds":[...]} on stdin, attach model suggestions
 #   close KEY WHY    move live/KEY.json into history/, trimmed to size and age
 #   drop KEY         forget a live notification without recording it
 #   restore          print the live notifications, oldest first
@@ -218,11 +219,56 @@ def _shape_ok(pattern, value):
     return True
 
 
+# A model suggestion the daemon accepted. It is not a capability the store may
+# grant on its own: the entry's own text has to still contain the value, which
+# means a notification whose body was redacted keeps none of them. QML checks
+# again with today's validators before anything opens.
+DEED_KINDS = {"link", "meeting", "code", "phone"}
+MAX_DEEDS = 8
+MAX_DEED = 2048
+
+
+def parse_deeds(text):
+    if not isinstance(text, str):
+        return []
+    try:
+        value = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def clean_deeds(payload, entry):
+    if not isinstance(payload, list):
+        return []
+    text = " ".join(entry.get(k) or "" for k in ("summary", "body", "rawBody")
+                    if isinstance(entry.get(k), str))
+    out = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        value = item.get("value")
+        if kind not in DEED_KINDS or not isinstance(value, str):
+            continue
+        if not value or len(value) > MAX_DEED or value not in text:
+            continue
+        if any(ord(c) < 32 or ord(c) == 127 for c in value):
+            continue
+        out.append({"kind": kind, "value": value})
+        if len(out) >= MAX_DEEDS:
+            break
+    return out
+
+
 def sanitise(entry):
     # Independently defend raw helper callers and legacy state migrations.
     allowed = {"key", "originalId", "senderPid", "app", "appIcon", "summary",
                "body", "rawBody", "bodyLine", "source", "groupKey", "urgency",
-               "expireTimeout", "duration", "ts", "closed_ts", "closed_reason"}
+               "expireTimeout", "duration", "ts", "closed_ts", "closed_reason",
+               # The model's accepted suggestions, as a JSON string. Only the
+               # values clean_deeds() could still find in this text survive.
+               "deeds"}
     # Scan the same bounded summary/rawBody/body fields as Store's redaction,
     # not metadata: keys/groupKey and app names can contain unrelated numbers
     # or product keywords. This independent detector strips raw tags before
@@ -255,11 +301,55 @@ def cmd_put():
     key = safe(entry.get("key"))
     if not key:
         return 1
-    write_json(os.path.join(LIVE, key + ".json"), entry)
+    path = os.path.join(LIVE, key + ".json")
+    # An icon write-back is a row snapshot taken when the notification arrived,
+    # before the model answered. Carry the stored suggestions forward rather
+    # than dropping them, re-checked against the text being written now - so a
+    # re-put can keep them but a redacted row cannot resurrect one.
+    previous = read_json(path)
+    candidates = parse_deeds(entry.get("deeds"))
+    if isinstance(previous, dict):
+        candidates = candidates + parse_deeds(previous.get("deeds"))
+    kept = clean_deeds(candidates, entry)
+    if kept:
+        entry["deeds"] = json.dumps(kept, separators=(",", ":"))
+    else:
+        entry.pop("deeds", None)
+    write_json(path, entry)
     # Floods and interrupted close queues cannot grow the live directory forever.
     names = sorted(n for n in os.listdir(LIVE) if n.endswith(".json"))
     for name in names[:-100]:
         os.unlink(os.path.join(LIVE, name))
+    return 0
+
+
+def cmd_deeds(key):
+    key = safe(key)
+    payload = input_json(sys.stdin)
+    path = os.path.join(LIVE, key + ".json")
+    if not os.path.exists(path):
+        # Closed already: history names entries "<stamp>-<key>.json". A key is
+        # unique for the life of an entry, so the suffix identifies it.
+        path = ""
+        suffix = "-" + key + ".json"
+        for name in os.listdir(HISTORY):
+            if name.endswith(suffix):
+                path = os.path.join(HISTORY, name)
+                break
+    if not path:
+        # Trimmed, forgotten, or history is off. A suggestion is not worth
+        # keeping a notification alive for.
+        return 0
+    entry = read_json(path)
+    if not isinstance(entry, dict):
+        return 1
+    kept = clean_deeds(payload.get("deeds"), entry)
+    if kept:
+        entry["deeds"] = json.dumps(kept, separators=(",", ":"))
+    else:
+        # An empty answer clears a stale suggestion rather than storing "[]".
+        entry.pop("deeds", None)
+    write_json(path, entry)
     return 0
 
 
@@ -411,6 +501,8 @@ def main():
         return 0
     if verb == "put":
         return cmd_put()
+    if verb == "deeds":
+        return cmd_deeds(args[1])
     if verb == "close":
         return cmd_close(args[1], args[2] if len(args) > 2 else "")
     if verb == "drop":

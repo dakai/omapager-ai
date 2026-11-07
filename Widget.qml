@@ -625,12 +625,24 @@ BarWidget {
                  label: row.meeting ? "Join" : "Open link", value: String(row.link) })
     if (String(row.phone || ""))
       out.push({ kind: "phone", label: "Copy number", value: String(row.phone) })
+    // What the model offered while the card was live. The row kept it, and the
+    // daemon checks it against the stored text again before using it.
+    var suggested = service ? service.llmDeeds(row) : []
+    for (var s = 0; s < suggested.length; s++) out.push(suggested[s])
     // Snoozing from here is about the source, which is what anyone wants after
     // reading a message they missed: stop it happening again.
     if (String(row.groupKey || ""))
       out.push({ kind: "snooze", label: "Snooze source", value: "60" })
     out.push({ kind: "forget", label: "Remove", value: "" })
     return out
+  }
+
+  // History keeps no detected capabilities - the store drops link, phone and
+  // code fields on write - so the only buttons a durable row can still offer
+  // are the ones the model suggested and the entry still justifies. Snooze and
+  // Remove are Recent's own verbs and have no row here to act on.
+  function historyDeeds(row) {
+    return row && service ? service.llmDeeds(row) : []
   }
 
   function takeRecentDeed(row, deed) {
@@ -1750,6 +1762,30 @@ BarWidget {
                     // Store already bounds the text; expanded cards show all of it.
                     maximumLineCount: historyCard.expanded ? 2147483647 : 2
                     elide: historyCard.expanded ? Text.ElideNone : Text.ElideRight
+                  }
+
+                  // The model's suggestion outlives the card. Its value was
+                  // quoted from this entry, and the daemon checks that it is
+                  // still there before anything opens or is copied.
+                  Row {
+                    width: parent.width
+                    spacing: Style.spacing.controlGap
+                    visible: pager.historyDeeds(historyCard.modelData).length > 0
+
+                    Repeater {
+                      model: pager.historyDeeds(historyCard.modelData)
+
+                      Button {
+                        required property var modelData
+                        text: String(modelData.label)
+                        foreground: pager.panelFg
+                        fontFamily: pager.fontFamily
+                        fontSize: Style.font.caption
+                        horizontalPadding: Style.spacing.controlPaddingX
+                        verticalPadding: Style.spacing.hairline
+                        onClicked: pager.takeRecentDeed(historyCard.modelData, modelData)
+                      }
+                    }
                   }
                 }
               }
